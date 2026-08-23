@@ -4,9 +4,9 @@ A Claude-native LLM gateway: OpenAI-compatible ingress, Anthropic Messages API
 egress, layered caching, a two-axis adaptive router, and a CI-gated evaluation
 harness.
 
-**Status: week 3 of 12.** The proxy skeleton, protocol translation (streaming and
-not), cost model, and trace persistence are in. Everything else is scaffolding
-with a date on it — see [Build order](#build-order).
+**Status: week 5 of 12.** The proxy skeleton, protocol translation (streaming and
+not), cost model, trace persistence, and the evaluation harness are in.
+Everything else is scaffolding with a date on it — see [Build order](#build-order).
 
 ---
 
@@ -51,6 +51,15 @@ Tests, lint, and types:
 pytest && ruff check . && mypy src/prism
 ```
 
+Run the eval suite against a running gateway:
+
+```bash
+python scripts/eval.py --dataset datasets/golden/v1.jsonl --candidate v2 --baseline v1
+```
+
+It exits non-zero on a regression, which is the entire interface the week-6 CI
+gate needs.
+
 ---
 
 ## What is built
@@ -65,7 +74,9 @@ pytest && ruff check . && mypy src/prism
 | Hashed per-tenant API keys | done |
 | Error taxonomy with the 429/529 split | done |
 | SSE streaming: block reassembly, tee-and-buffer, split timeouts | done |
-| Eval harness, judge calibration, CI gate | weeks 4–6 |
+| Golden dataset, programmatic metrics, bootstrap CIs | done |
+| Pairwise LLM-as-judge with position swapping + kappa calibration | done |
+| CI regression gate | week 6 |
 | Prefix-breakpoint policy, semantic cache | weeks 7–8 |
 | Two-axis router | week 9 |
 | Rate limiting, circuit breakers, budgets | weeks 10–11 |
@@ -230,6 +241,71 @@ rates.
 
 ---
 
+### The eval harness came before the cache and the router
+
+Both need it as ground truth. The cache's operating point is a precision/recall
+tradeoff that can only be chosen against measured quality, and the router trains
+on labelled outcomes this harness produces. Building either first would mean
+tuning them against a number invented afterwards to justify the result — which is
+how the eval story becomes an afterthought, and the failure mode this project is
+organised to avoid.
+
+### Report intervals, not point estimates
+
+On a 200-example set, whether +3% is real depends on the *disagreement pattern*,
+not the margin. An arm that wins 13 examples and loses 7 nets +3% with an interval
+spanning zero — nothing has been shown. An arm that wins 6 and loses none nets the
+same +3% and is detectable. Both cases are pinned as tests.
+
+Comparisons are **paired**: both arms answer the same examples, so bootstrapping
+resamples examples rather than arms. Discarding the pairing throws away the fact
+that a hard example is hard for both and hides real effects behind example-level
+variance. The bootstrap seed is fixed, because an interval that moves between runs
+of identical data invites re-rolling until the answer is the one you wanted.
+
+The gate fails only when the *entire* interval sits below tolerance. A gate that
+fired on the point estimate would fail roughly half of all no-op changes and be
+switched off within a week.
+
+### The judge is an instrument, and instruments get calibrated
+
+Three biases are handled structurally rather than hoped away:
+
+* **Position bias** — judges favour whatever they read first. Every comparison
+  runs in both orders, and a pair only counts as a win if the *same response*
+  wins twice. Flip across orders and it is recorded as `inconsistent`, which is
+  information: a rising inconsistency rate means the judge cannot tell the arms
+  apart, and the honest reading is "no measurable difference", not a coin flip.
+  The rate is reported on its own.
+* **Self-preference** — models score their own output higher. Prism serves Claude
+  on every tier, so `assert_different_family()` refuses a Claude judge outright.
+  Staying single-vendor on the serving side makes this *checkable* rather than a
+  rule someone has to remember.
+* **Verbosity bias** — the rubric names it, and the judge returns a verdict token
+  rather than an essay, which also makes parsing deterministic.
+
+None of that makes the judge correct. Cohen's kappa against ~100 human labels is
+what says whether it agrees with people better than chance. Raw agreement will not
+do: two raters who both say "tie" most of the time agree 80% of the time and score
+κ = 0.41 — "moderate". Every judge-derived number is reported with its kappa
+attached, and a run whose judge falls below substantial agreement prints a warning
+rather than a clean result.
+
+### Splits exist to stop the router grading its own homework
+
+The week-9 router trains on outcomes this harness produces. Train and score it on
+the same examples and its reported quality retention is memorisation. `split` is
+required on every example, `load()` refuses a file whose ids repeat across splits,
+and `assert_disjoint()` is called before any training run.
+
+### Cost per successful task, not cost per token
+
+A cheap arm that fails 40% of the time and triggers a retry on the expensive one
+costs more than going straight to the expensive one. `ArmScores` reports both, and
+a test pins the case where the cheaper arm wins on total cost and loses on cost per
+success. Failed calls score zero rather than being dropped — dropping them would
+let an arm improve its average by erroring on the examples it finds hard.
+
 ## Layout
 
 ```
@@ -244,7 +320,9 @@ src/prism/
   providers/        provider adapters (Anthropic today; the interface is for week 10)
   db/               SQLAlchemy models, engine, repository
   tracing/          trace assembly and background persistence
+  eval/             golden dataset, metrics, judge, calibration, bootstrap stats
 migrations/         idempotent SQL, applied on first boot and by scripts/migrate.py
+datasets/golden/    the golden set, versioned next to the code
 ```
 
 ## Endpoints
@@ -268,7 +346,7 @@ Every completion response carries `x-prism-model` (what actually ran),
 2. **Week 3** — streaming: block-structured event reassembly, tee-and-buffer,
    first-token vs total timeout split, client-disconnect handling ✅
 3. **Weeks 4–5** — eval harness *before* the cache and the router, because both
-   need it as ground truth
+   need it as ground truth ✅
 4. **Week 6** — CI regression gate
 5. **Weeks 7–8** — prefix breakpoint policy and measurement, then the semantic
    layer with its labelled pair set and ROC curve
