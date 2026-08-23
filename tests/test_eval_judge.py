@@ -101,9 +101,7 @@ async def test_a_consistent_loss_survives_the_swap():
 async def test_a_judge_that_always_picks_the_first_scores_nothing():
     # The whole point of swapping. Without it this judge would report a 100%
     # win rate for whichever arm happened to be printed first.
-    result = await PairwiseJudge(AlwaysFirstJudge()).compare(
-        example(), "candidate", "baseline"
-    )
+    result = await PairwiseJudge(AlwaysFirstJudge()).compare(example(), "candidate", "baseline")
     assert result.verdict is Verdict.INCONSISTENT
     # A judge that cannot hold an opinion has not detected a difference.
     assert result.candidate_score == 0.5

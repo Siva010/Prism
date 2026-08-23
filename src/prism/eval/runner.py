@@ -72,6 +72,12 @@ class ArmScores:
     def total_cost_usd(self) -> Decimal:
         return sum((r.cost_usd for r in self.responses.values()), Decimal(0))
 
+    @property
+    def failure_rate(self) -> float:
+        if not self.responses:
+            return 1.0
+        return self.failures / len(self.responses)
+
     def interval(self, metric: str, *, seed: int = 0) -> Interval:
         return bootstrap_ci(self.per_metric.get(metric, []), seed=seed)
 
@@ -124,6 +130,23 @@ class RunReport:
     tolerance: float = 0.0
 
     @property
+    def failure_rate(self) -> float:
+        """The worst arm's share of failed calls.
+
+        A run where most calls failed is not a measurement of quality, and both
+        arms failing *equally* is the dangerous case: every metric reads 0.0, every
+        delta reads 0.0, and the gate passes. Callers must check this before
+        trusting `regressed`.
+        """
+        rates = [self.candidate.failure_rate]
+        if self.baseline is not None:
+            rates.append(self.baseline.failure_rate)
+        return max(rates)
+
+    def measured(self, *, max_failure_rate: float = 0.10) -> bool:
+        return self.failure_rate <= max_failure_rate
+
+    @property
     def regressed(self) -> bool:
         """The gate decision. Any metric whose whole interval is a drop fails."""
         return any(
@@ -153,6 +176,7 @@ class RunReport:
                 else None
             ),
             "failures": self.candidate.failures,
+            "failure_rate": self.failure_rate,
             "regressed": self.regressed,
         }
 
@@ -176,8 +200,7 @@ class RunReport:
                 # where a stray non-cp1252 glyph turns a passing gate into a
                 # UnicodeEncodeError.
                 line += (
-                    f"   delta {delta.point:+.4f} "
-                    f"[{delta.low:+.4f}, {delta.high:+.4f}] {verdict}"
+                    f"   delta {delta.point:+.4f} [{delta.low:+.4f}, {delta.high:+.4f}] {verdict}"
                 )
             lines.append(line)
 
@@ -200,6 +223,18 @@ class RunReport:
                     "judge-derived numbers as directional only."
                 )
 
+        if self.failure_rate > 0:
+            lines += [
+                "",
+                f"  failed calls: {self.candidate.failures}/"
+                f"{len(self.candidate.responses)} candidate"
+                + (
+                    f", {self.baseline.failures}/{len(self.baseline.responses)} baseline"
+                    if self.baseline is not None
+                    else ""
+                ),
+            ]
+
         lines += [
             "",
             f"  cost: ${self.candidate.total_cost_usd:.4f}"
@@ -208,7 +243,14 @@ class RunReport:
                 if self.candidate.cost_per_successful_task is not None
                 else ""
             ),
-            f"  gate: {'FAIL - regression detected' if self.regressed else 'pass'}",
+            "  gate: "
+            + (
+                # A run where the calls did not land has no verdict to give. Saying
+                # "pass" here would be the single most misleading line in the tool.
+                f"NOT MEASURED - {self.failure_rate:.0%} of calls failed"
+                if not self.measured()
+                else ("FAIL - regression detected" if self.regressed else "pass")
+            ),
         ]
         return "\n".join(lines)
 

@@ -38,11 +38,7 @@ class TokenUsage:
 
     @property
     def billable_input_tokens(self) -> int:
-        return (
-            self.input_tokens
-            + self.cache_read_input_tokens
-            + self.cache_creation_input_tokens
-        )
+        return self.input_tokens + self.cache_read_input_tokens + self.cache_creation_input_tokens
 
     @property
     def prefix_cache_hit_rate(self) -> float:
@@ -74,18 +70,13 @@ class CostBreakdown:
     @property
     def total_usd(self) -> Decimal:
         return (
-            self.uncached_input_usd
-            + self.cached_input_usd
-            + self.cache_write_usd
-            + self.output_usd
+            self.uncached_input_usd + self.cached_input_usd + self.cache_write_usd + self.output_usd
         )
 
     def as_json(self) -> dict[str, str]:
         # Serialized as strings: JSONB would otherwise round-trip Decimal through
         # float and lose cents at aggregate scale.
-        return {k: str(v) for k, v in asdict(self).items()} | {
-            "total_usd": str(self.total_usd)
-        }
+        return {k: str(v) for k, v in asdict(self).items()} | {"total_usd": str(self.total_usd)}
 
 
 def compute_cost(
@@ -96,21 +87,15 @@ def compute_cost(
     on: date | None = None,
 ) -> CostBreakdown:
     input_rate, output_rate = spec.rates(on)
-    write_multiplier = (
-        CACHE_WRITE_1H_MULTIPLIER if cache_ttl == "1h" else CACHE_WRITE_5M_MULTIPLIER
-    )
+    write_multiplier = CACHE_WRITE_1H_MULTIPLIER if cache_ttl == "1h" else CACHE_WRITE_5M_MULTIPLIER
 
     def price(tokens: int, rate: Decimal) -> Decimal:
         return (Decimal(tokens) * rate) / _PER_MTOK
 
     return CostBreakdown(
         uncached_input_usd=price(usage.input_tokens, input_rate),
-        cached_input_usd=price(
-            usage.cache_read_input_tokens, input_rate * CACHE_READ_MULTIPLIER
-        ),
-        cache_write_usd=price(
-            usage.cache_creation_input_tokens, input_rate * write_multiplier
-        ),
+        cached_input_usd=price(usage.cache_read_input_tokens, input_rate * CACHE_READ_MULTIPLIER),
+        cache_write_usd=price(usage.cache_creation_input_tokens, input_rate * write_multiplier),
         output_usd=price(usage.output_tokens, output_rate),
     )
 

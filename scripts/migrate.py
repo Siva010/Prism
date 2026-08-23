@@ -37,8 +37,7 @@ async def main() -> int:
             )
         )
         applied = {
-            row[0]
-            for row in (await conn.execute(text("SELECT version FROM schema_migrations")))
+            row[0] for row in (await conn.execute(text("SELECT version FROM schema_migrations")))
         }
 
     for path in sorted(MIGRATIONS_DIR.glob("*.sql")):

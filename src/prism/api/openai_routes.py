@@ -89,9 +89,7 @@ async def create_chat_completion(
         spec = resolve_model(body.model)
     except UnknownModelError as exc:
         raise fail(
-            PrismError(
-                ErrorKind.INVALID_REQUEST, str(exc), status_code=404, param="model"
-            )
+            PrismError(ErrorKind.INVALID_REQUEST, str(exc), status_code=404, param="model")
         ) from exc
 
     draft.model_resolved = spec.id
@@ -147,9 +145,7 @@ async def create_chat_completion(
     except PrismError as exc:
         raise fail(exc) from exc
 
-    completion = response_translator.translate(
-        upstream.payload, model_requested=body.model
-    )
+    completion = response_translator.translate(upstream.payload, model_requested=body.model)
     usage = response_translator.extract_usage(upstream.payload)
     cost = compute_cost(usage, spec)
 
@@ -181,16 +177,12 @@ async def create_chat_completion(
             # Not clamped at zero: a negative value means the two clocks
             # disagree, and hiding that behind a 0 would make a broken
             # measurement look like a fast one.
-            "x-prism-gateway-overhead-ms": str(
-                (draft.latency_ms or 0) - upstream.latency_ms
-            ),
+            "x-prism-gateway-overhead-ms": str((draft.latency_ms or 0) - upstream.latency_ms),
         },
     )
 
 
-async def _prepend(
-    first: bytes | None, rest: AsyncIterator[bytes]
-) -> AsyncIterator[bytes]:
+async def _prepend(first: bytes | None, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
     if first is not None:
         yield first
     async for frame in rest:
@@ -199,9 +191,7 @@ async def _prepend(
 
 def _carries_content(chunk: dict[str, Any]) -> bool:
     delta = chunk["choices"][0]["delta"] if chunk.get("choices") else {}
-    return bool(
-        delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls")
-    )
+    return bool(delta.get("content") or delta.get("reasoning_content") or delta.get("tool_calls"))
 
 
 async def _stream_completion(

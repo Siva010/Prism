@@ -16,15 +16,15 @@ from pydantic import BaseModel
 
 
 class ErrorKind(StrEnum):
-    INVALID_REQUEST = "invalid_request_error"       # 400 from the client
-    TRANSLATION = "translation_error"               # we could not express it upstream
-    AUTHENTICATION = "authentication_error"         # 401 at the gateway
-    UPSTREAM_INVALID_REQUEST = "upstream_invalid_request"   # 400 from the provider
-    UPSTREAM_AUTH = "upstream_authentication_error"        # 401/403 from the provider
-    UPSTREAM_NOT_FOUND = "upstream_not_found"              # 404 from the provider
-    UPSTREAM_RATE_LIMIT = "upstream_rate_limit"            # 429 — quota exhausted
-    UPSTREAM_OVERLOADED = "upstream_overloaded"            # 529 — provider capacity
-    UPSTREAM_SERVER_ERROR = "upstream_server_error"        # 5xx other than 529
+    INVALID_REQUEST = "invalid_request_error"  # 400 from the client
+    TRANSLATION = "translation_error"  # we could not express it upstream
+    AUTHENTICATION = "authentication_error"  # 401 at the gateway
+    UPSTREAM_INVALID_REQUEST = "upstream_invalid_request"  # 400 from the provider
+    UPSTREAM_AUTH = "upstream_authentication_error"  # 401/403 from the provider
+    UPSTREAM_NOT_FOUND = "upstream_not_found"  # 404 from the provider
+    UPSTREAM_RATE_LIMIT = "upstream_rate_limit"  # 429 — quota exhausted
+    UPSTREAM_OVERLOADED = "upstream_overloaded"  # 529 — provider capacity
+    UPSTREAM_SERVER_ERROR = "upstream_server_error"  # 5xx other than 529
     UPSTREAM_TIMEOUT = "upstream_timeout"
     UPSTREAM_CONNECTION = "upstream_connection_error"
     INTERNAL = "internal_error"

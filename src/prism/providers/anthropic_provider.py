@@ -51,16 +51,10 @@ def parse_rate_limits(headers: httpx.Headers) -> RateLimitSnapshot:
         requests_remaining=_int_header(headers, "anthropic-ratelimit-requests-remaining"),
         requests_reset=headers.get("anthropic-ratelimit-requests-reset"),
         input_tokens_limit=_int_header(headers, "anthropic-ratelimit-input-tokens-limit"),
-        input_tokens_remaining=_int_header(
-            headers, "anthropic-ratelimit-input-tokens-remaining"
-        ),
+        input_tokens_remaining=_int_header(headers, "anthropic-ratelimit-input-tokens-remaining"),
         input_tokens_reset=headers.get("anthropic-ratelimit-input-tokens-reset"),
-        output_tokens_limit=_int_header(
-            headers, "anthropic-ratelimit-output-tokens-limit"
-        ),
-        output_tokens_remaining=_int_header(
-            headers, "anthropic-ratelimit-output-tokens-remaining"
-        ),
+        output_tokens_limit=_int_header(headers, "anthropic-ratelimit-output-tokens-limit"),
+        output_tokens_remaining=_int_header(headers, "anthropic-ratelimit-output-tokens-remaining"),
         output_tokens_reset=headers.get("anthropic-ratelimit-output-tokens-reset"),
         retry_after_s=_float_header(headers, "retry-after"),
     )
@@ -158,8 +152,9 @@ class AnthropicProvider:
                 # A 429 is relayed as a 429 and a 529 as a 503 with retry-after
                 # intact, so a well-behaved client can do the right thing without
                 # knowing which upstream served it.
-                status_code=429 if kind is ErrorKind.UPSTREAM_RATE_LIMIT else
-                (503 if kind is ErrorKind.UPSTREAM_OVERLOADED else response.status_code),
+                status_code=429
+                if kind is ErrorKind.UPSTREAM_RATE_LIMIT
+                else (503 if kind is ErrorKind.UPSTREAM_OVERLOADED else response.status_code),
                 retry_after=rate_limits.retry_after_s,
                 upstream_status=response.status_code,
                 upstream_body=payload,
@@ -191,9 +186,7 @@ class AnthropicProvider:
             # httpx's read timeout would fire between SSE frames, which on a
             # healthy but slow generation is a false positive. The real budgets
             # are enforced by StreamHandle against absolute deadlines.
-            timeout=httpx.Timeout(
-                total_timeout_s, connect=self._connect_timeout_s, read=None
-            ),
+            timeout=httpx.Timeout(total_timeout_s, connect=self._connect_timeout_s, read=None),
         )
         try:
             response = await self._client.send(request, stream=True)
@@ -218,9 +211,7 @@ class AnthropicProvider:
                 kind = classify_status(response.status_code)
                 try:
                     error_payload = response.json()
-                    message = (
-                        error_payload.get("error") or {}
-                    ).get("message") or response.text
+                    message = (error_payload.get("error") or {}).get("message") or response.text
                 except ValueError:
                     error_payload = {"raw": response.text}
                     message = response.text
@@ -230,11 +221,7 @@ class AnthropicProvider:
                     message,
                     status_code=429
                     if kind is ErrorKind.UPSTREAM_RATE_LIMIT
-                    else (
-                        503
-                        if kind is ErrorKind.UPSTREAM_OVERLOADED
-                        else response.status_code
-                    ),
+                    else (503 if kind is ErrorKind.UPSTREAM_OVERLOADED else response.status_code),
                     retry_after=rate_limits.retry_after_s,
                     upstream_status=response.status_code,
                     upstream_body=error_payload,

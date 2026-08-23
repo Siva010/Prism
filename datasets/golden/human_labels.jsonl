@@ -1,0 +1,14 @@
+// Human labels for judge calibration. One JSON object per line:
+//   {"example_id": "open-001", "label": "A" | "B" | "tie", "annotator": "you"}
+//
+// "A" means the CANDIDATE response was better, "B" the baseline, "tie" neither.
+// Labels are only meaningful against the exact pair of responses the annotator
+// saw, so regenerate the sheet whenever the arms change:
+//
+//   python scripts/eval.py --candidate assistant@v2 --baseline assistant@v1 --json
+//
+// Target ~100 labelled comparisons. Below that the agreement interval is wider
+// than the differences it is being used to judge.
+//
+// This file is intentionally empty. Fabricated labels would produce a kappa that
+// measures nothing while looking like calibration, which is worse than none.

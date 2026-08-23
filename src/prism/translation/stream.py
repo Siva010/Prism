@@ -264,9 +264,7 @@ class StreamAssembler:
         if self._first_content_at is None:
             self._first_content_at = time.perf_counter()
 
-    def _chunk(
-        self, delta: dict[str, Any], *, finish_reason: str | None = None
-    ) -> dict[str, Any]:
+    def _chunk(self, delta: dict[str, Any], *, finish_reason: str | None = None) -> dict[str, Any]:
         return {
             "id": self.completion_id,
             "object": "chat.completion.chunk",
@@ -304,9 +302,7 @@ class StreamAssembler:
         return TokenUsage(
             input_tokens=self._usage.get("input_tokens", 0),
             cache_read_input_tokens=self._usage.get("cache_read_input_tokens", 0),
-            cache_creation_input_tokens=self._usage.get(
-                "cache_creation_input_tokens", 0
-            ),
+            cache_creation_input_tokens=self._usage.get("cache_creation_input_tokens", 0),
             output_tokens=self._usage.get("output_tokens", 0),
         )
 

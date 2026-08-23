@@ -309,3 +309,160 @@ def test_calibration_summary_is_ascii_only():
     )
     assert text.isascii()
     text.encode("cp1252")
+
+
+# --- the gate's own output ------------------------------------------------
+
+
+async def test_the_gate_summary_names_the_metric_that_moved():
+    # A gate that only says "failed" gets overridden. One that shows which
+    # metric moved, by how much, and with what interval gets acted on.
+    from prism.eval.report import markdown_summary
+
+    report = await run(
+        tiny_dataset(),
+        arm_answering(4, "assistant@v2"),
+        baseline=arm_answering(18, "assistant@v1"),
+    )
+    summary = markdown_summary(report)
+
+    assert "REGRESSION DETECTED" in summary
+    assert "assistant@v2" in summary and "assistant@v1" in summary
+    assert "exact_match" in summary
+    assert "**regression**" in summary
+    # The interval, not just the point estimate.
+    assert "[" in summary and "]" in summary
+
+
+async def test_a_passing_gate_says_so_without_alarm():
+    from prism.eval.report import markdown_summary
+
+    report = await run(
+        tiny_dataset(),
+        arm_answering(14, "candidate"),
+        baseline=arm_answering(14, "baseline"),
+    )
+    summary = markdown_summary(report)
+    assert "Eval gate: passed" in summary
+    assert "**regression**" not in summary
+
+
+async def test_an_uncalibrated_judge_is_flagged_in_the_summary():
+    # A win rate from an instrument with no known agreement rate is a number,
+    # not a measurement, and the summary must not present it as one.
+    from prism.eval.report import markdown_summary
+
+    class Judge:
+        model = "gpt-4o-mini"
+
+        async def complete(self, system: str, user: str) -> str:
+            return json.dumps({"winner": "A", "reason": "x"})
+
+    dataset = Dataset(
+        [
+            Example.model_validate(
+                {
+                    "id": "o1",
+                    "split": "test",
+                    "task_type": "open_ended",
+                    "messages": [{"role": "user", "content": "explain"}],
+                }
+            )
+        ]
+    )
+
+    async def answer(example: Example) -> Response:
+        return Response(example.id, "an answer")
+
+    report = await run(
+        dataset,
+        Arm("cand", answer),
+        baseline=Arm("base", answer),
+        judge=PairwiseJudge(Judge()),
+    )
+    summary = markdown_summary(report)
+    assert "uncalibrated" in summary
+
+
+async def test_the_gate_summary_is_ascii_only():
+    from prism.eval.report import markdown_summary
+
+    report = await run(
+        tiny_dataset(),
+        arm_answering(4, "candidate"),
+        baseline=arm_answering(18, "baseline"),
+    )
+    summary = markdown_summary(report)
+    assert summary.isascii(), [c for c in summary if not c.isascii()]
+    summary.encode("cp1252")
+
+
+# --- a run that did not happen is not a pass ------------------------------
+
+
+async def failing_arm(name: str) -> Arm:
+    async def fn(example: Example) -> Response:
+        raise RuntimeError("connection refused")
+
+    return Arm(name, fn)
+
+
+async def test_two_arms_failing_equally_is_not_reported_as_a_pass():
+    """The most dangerous failure mode this tool has.
+
+    With the gateway down, every call errors, every metric reads 0.0 for both
+    arms, every delta reads 0.0 — and a naive gate calls that "no change" and
+    goes green. Found by running the CLI with no gateway up.
+    """
+    report = await run(
+        tiny_dataset(),
+        await failing_arm("candidate"),
+        baseline=await failing_arm("baseline"),
+    )
+    assert report.metric_intervals["exact_match"].point == 0.0
+    assert report.metric_deltas["exact_match"].point == 0.0
+    assert not report.regressed  # nothing regressed, because nothing happened
+    # ...which is exactly why `regressed` alone must never be the gate.
+    assert report.failure_rate == 1.0
+    assert not report.measured()
+    assert "NOT MEASURED" in report.render()
+
+
+async def test_a_broken_run_is_reported_as_broken_in_the_job_summary():
+    from prism.eval.report import markdown_summary
+
+    report = await run(
+        tiny_dataset(),
+        await failing_arm("candidate"),
+        baseline=await failing_arm("baseline"),
+    )
+    summary = markdown_summary(report)
+    assert "NOT MEASURED" in summary
+    assert "not a passing one" in summary
+
+
+async def test_a_few_scattered_failures_do_not_abort_the_run():
+    # Occasional upstream errors are normal and are scored as zero. The floor is
+    # for "nothing landed", not for "one call flaked".
+    async def flaky(example: Example) -> Response:
+        if example.id == "q0":
+            raise RuntimeError("transient")
+        return Response(example.id, "right")
+
+    report = await run(tiny_dataset(), Arm("flaky", flaky))
+    assert report.failure_rate == 0.05
+    assert report.measured()
+
+
+async def test_the_failure_floor_looks_at_the_worst_arm():
+    # A baseline that failed wholesale invalidates the comparison just as surely
+    # as a broken candidate does.
+    async def fine(example: Example) -> Response:
+        return Response(example.id, "right")
+
+    report = await run(
+        tiny_dataset(), Arm("candidate", fine), baseline=await failing_arm("baseline")
+    )
+    assert report.candidate.failure_rate == 0.0
+    assert report.failure_rate == 1.0
+    assert not report.measured()

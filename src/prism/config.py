@@ -19,9 +19,7 @@ class Settings(BaseSettings):
     # Upstream credentials are read without the PRISM_ prefix so the Anthropic SDK
     # and Prism agree on one variable.
     anthropic_api_key: str = Field(default="", alias="ANTHROPIC_API_KEY")
-    anthropic_base_url: str = Field(
-        default="https://api.anthropic.com", alias="ANTHROPIC_BASE_URL"
-    )
+    anthropic_base_url: str = Field(default="https://api.anthropic.com", alias="ANTHROPIC_BASE_URL")
 
     database_url: str = "postgresql+asyncpg://prism:prism@localhost:5434/prism"
     redis_url: str = "redis://localhost:6380/0"

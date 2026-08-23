@@ -61,9 +61,7 @@ async def get_traces(
     offset: int = Query(0, ge=0),
 ) -> dict[str, Any]:
     async with session_scope() as session:
-        rows = await list_traces(
-            session, tenant_id=principal.tenant_id, limit=limit, offset=offset
-        )
+        rows = await list_traces(session, tenant_id=principal.tenant_id, limit=limit, offset=offset)
     return {"object": "list", "data": [_summarize(t) for t in rows]}
 
 

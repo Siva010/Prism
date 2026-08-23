@@ -85,9 +85,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         )
 
     @app.exception_handler(RequestValidationError)
-    async def validation_handler(
-        _: Request, exc: RequestValidationError
-    ) -> JSONResponse:
+    async def validation_handler(_: Request, exc: RequestValidationError) -> JSONResponse:
         # FastAPI's default 422 body is not the shape an OpenAI client expects.
         first = exc.errors()[0] if exc.errors() else {}
         param = ".".join(str(p) for p in first.get("loc", ())[1:]) or None

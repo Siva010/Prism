@@ -81,9 +81,9 @@ def test_pairing_is_tighter_than_treating_the_arms_independently():
     candidate = [min(1.0, b + 0.05) for b in baseline]
 
     paired = paired_bootstrap_ci(candidate, baseline, resamples=2000)
-    unpaired_spread = bootstrap_ci(candidate, resamples=2000).width + bootstrap_ci(
-        baseline, resamples=2000
-    ).width
+    unpaired_spread = (
+        bootstrap_ci(candidate, resamples=2000).width + bootstrap_ci(baseline, resamples=2000).width
+    )
     assert paired.width < unpaired_spread
 
 
@@ -103,9 +103,7 @@ def test_the_gate_fires_only_when_the_whole_interval_is_a_regression():
 
     # A gate that fired on the point estimate alone would fail roughly half of
     # all no-op changes and be switched off within a week.
-    noise = paired_bootstrap_ci(
-        [1.0] * 99 + [0.0] * 101, [1.0] * 100 + [0.0] * 100, resamples=2000
-    )
+    noise = paired_bootstrap_ci([1.0] * 99 + [0.0] * 101, [1.0] * 100 + [0.0] * 100, resamples=2000)
     assert noise.point < 0
     assert not regression_detected(noise)
 

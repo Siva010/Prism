@@ -1,0 +1,65 @@
+name: CI
+
+# The fast checks. Deliberately separate from the eval gate: this job needs no
+# API keys and no upstream calls, so it runs on forks and on every push, and a
+# lint error is never reported as a quality regression.
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install
+        run: uv sync --extra dev || uv pip install --system -e ".[dev]"
+
+      - name: Lint
+        run: uv run ruff check .
+
+      - name: Format check
+        run: uv run ruff format --check .
+
+      - name: Types
+        run: uv run mypy src/prism
+
+      - name: Tests
+        run: uv run pytest -q
+
+      - name: Validate the golden dataset
+        # The dataset is data, so nothing else would catch a malformed line or a
+        # duplicate id across splits until an eval run failed hours later.
+        run: |
+          uv run python -c "
+          from prism.eval.dataset import load
+          import json
+          d = load('datasets/golden/v1.jsonl')
+          print(json.dumps(d.summary(), indent=2))
+          "
+
+      - name: Validate the prompt registry
+        run: |
+          uv run python -c "
+          from prism.prompts import Registry
+          r = Registry('prompts')
+          for name in r.names():
+              active = r.active(name)
+              versions = ', '.join(str(v) for v in r.versions(name))
+              print(f'{name}: versions [{versions}], active {active}')
+          "

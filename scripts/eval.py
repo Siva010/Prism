@@ -39,7 +39,9 @@ from prism.eval.clients import (  # noqa: E402
 )
 from prism.eval.dataset import load  # noqa: E402
 from prism.eval.judge import PairwiseJudge  # noqa: E402
+from prism.eval.report import markdown_summary  # noqa: E402
 from prism.eval.runner import run  # noqa: E402
+from prism.prompts import PromptError, Registry  # noqa: E402
 
 
 def git_sha() -> str | None:
@@ -78,6 +80,22 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json", action="store_true")
     p.add_argument("--gateway-url", default=os.environ.get("PRISM_URL", "http://localhost:8000"))
     p.add_argument("--api-key", default=os.environ.get("PRISM_API_KEY", ""))
+    p.add_argument("--prompts", default="prompts", help="prompt registry root")
+    p.add_argument(
+        "--auto",
+        action="store_true",
+        help="gate whatever the registry says is pending (candidate = newest "
+        "version, baseline = active). Exits 0 with no run when nothing is pending.",
+    )
+    p.add_argument("--summary-file", default=os.environ.get("GITHUB_STEP_SUMMARY"))
+    p.add_argument(
+        "--max-failure-rate",
+        type=float,
+        default=0.10,
+        help="abort rather than report a verdict when more than this share of "
+        "calls failed. A gateway that is down makes both arms score zero, "
+        "which otherwise looks like a clean pass.",
+    )
     return p
 
 
@@ -91,22 +109,60 @@ async def main(argv: list[str]) -> int:
         return 2
 
     model = args.model or settings.default_model
+    registry = Registry(args.prompts)
+
+    candidate_ref, baseline_ref = args.candidate, args.baseline
+    candidate_text = baseline_text = None
+
+    if args.auto:
+        pending = registry.all_pending()
+        if not pending:
+            # Nothing to gate. Passing here is correct: a gate that invented a
+            # comparison would burn a full eval run on every unrelated commit.
+            print("no pending prompt versions - nothing to gate.")
+            return 0
+        if len(pending) > 1:
+            print(
+                f"ERROR: {len(pending)} prompts have pending versions "
+                f"({', '.join(sorted(pending))}). Gate them one at a time so a "
+                "regression can be attributed to a single change.",
+                file=sys.stderr,
+            )
+            return 2
+        _name, (cand, base) = next(iter(pending.items()))
+        candidate_ref, baseline_ref = cand.ref, base.ref
+        candidate_text, baseline_text = cand.text, base.text
+        print(f"gating {cand.ref} against {base.ref}")
+    else:
+        try:
+            if "@" in str(candidate_ref):
+                prompt = registry.resolve(candidate_ref)
+                candidate_ref, candidate_text = prompt.ref, prompt.text
+            if baseline_ref and "@" in str(baseline_ref):
+                prompt = registry.resolve(baseline_ref)
+                baseline_ref, baseline_text = prompt.ref, prompt.text
+        except PromptError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 2
+
     candidate = GatewayArm(
-        args.candidate,
+        candidate_ref,
         base_url=args.gateway_url,
         api_key=args.api_key,
         model=model,
-        prompt_version=args.candidate,
+        prompt_version=candidate_ref,
+        system_prompt=candidate_text,
     )
     baseline = (
         GatewayArm(
-            args.baseline,
+            baseline_ref,
             base_url=args.gateway_url,
             api_key=args.api_key,
             model=args.baseline_model or model,
-            prompt_version=args.baseline,
+            prompt_version=baseline_ref,
+            system_prompt=baseline_text,
         )
-        if args.baseline
+        if baseline_ref
         else None
     )
 
@@ -149,13 +205,41 @@ async def main(argv: list[str]) -> int:
     )
 
     if args.human_labels and report.judge_results:
-        report.calibration = calibrate(
-            report.judge_results,
-            load_human_labels(args.human_labels),
-            judge_model=judge_model or "",
+        labels = (
+            load_human_labels(args.human_labels)
+            if pathlib.Path(args.human_labels).is_file()
+            else []
         )
+        if labels:
+            report.calibration = calibrate(
+                report.judge_results, labels, judge_model=judge_model or ""
+            )
+        else:
+            # Loud, and not fatal. An uncalibrated judge still produces verdicts;
+            # what it does not produce is a known agreement rate, and the summary
+            # says so rather than presenting the win rate as measured.
+            print(
+                f"WARNING: no human labels in {args.human_labels} - judge verdicts "
+                "will be reported without a calibration figure.",
+                file=sys.stderr,
+            )
 
     print(json.dumps(report.as_json(), indent=2) if args.json else report.render())
+
+    if not report.measured(max_failure_rate=args.max_failure_rate):
+        # Exit 2, not 1: this is "the gate could not run", which is a different
+        # thing from "quality regressed" and needs a different fix.
+        print(
+            f"\nERROR: {report.failure_rate:.0%} of calls failed "
+            f"(limit {args.max_failure_rate:.0%}). Nothing was measured, so no "
+            "verdict is reported. Check that the gateway at "
+            f"{args.gateway_url} is running and the API key is valid.",
+            file=sys.stderr,
+        )
+        return 2
+
+    if args.summary_file:
+        pathlib.Path(args.summary_file).write_text(markdown_summary(report), encoding="utf-8")
 
     if not args.no_store:
         init_engine(settings.database_url)

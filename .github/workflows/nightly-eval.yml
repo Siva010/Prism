@@ -1,0 +1,97 @@
+name: Nightly eval
+
+# The full suite against the active prompt, on a schedule. The PR gate answers
+# "did this change make it worse?"; this answers "has it drifted?" — the same
+# prompt and model can move under you as a model is updated, and nothing in the
+# PR flow would ever notice.
+#
+# Scheduled runs are latency-insensitive and large, which is exactly the
+# workload batch pricing exists for. This currently uses the synchronous
+# endpoint; moving it to the Message Batches API is the next piece of the eval
+# story and is tracked in the README's build order.
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+jobs:
+  nightly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: prism
+          POSTGRES_PASSWORD: prism
+          POSTGRES_DB: prism
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U prism -d prism"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    env:
+      PRISM_DATABASE_URL: postgresql+asyncpg://prism:prism@localhost:5432/prism
+      PRISM_URL: http://localhost:8000
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PRISM_JUDGE_MODEL: ${{ vars.PRISM_JUDGE_MODEL }}
+      PRISM_JUDGE_API_KEY: ${{ secrets.PRISM_JUDGE_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install
+        run: uv sync --extra dev || uv pip install --system -e ".[dev]"
+
+      - name: Migrate
+        run: uv run python scripts/migrate.py
+
+      - name: Mint a tenant key
+        id: tenant
+        run: |
+          KEY=$(uv run python scripts/create_tenant.py nightly "Nightly" | awk '/^api key/ {print $3}')
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Start the gateway
+        run: |
+          uv run uvicorn prism.main:app --app-dir src --port 8000 --log-level warning &
+          for _ in $(seq 1 40); do
+            if curl -sf http://localhost:8000/healthz > /dev/null; then exit 0; fi
+            sleep 1
+          done
+          echo "::error::gateway did not become healthy"; exit 1
+
+      - name: Score the active prompt across the whole ladder
+        env:
+          PRISM_API_KEY: ${{ steps.tenant.outputs.key }}
+        run: |
+          for model in claude-haiku-4-5 claude-sonnet-5 claude-opus-5; do
+            echo "::group::$model"
+            # --no-judge: with no baseline arm there is no pairwise comparison to
+            # make, so calling the judge would spend money to learn nothing.
+            uv run python scripts/eval.py \
+              --candidate assistant \
+              --model "$model" \
+              --dataset datasets/golden/v1.jsonl \
+              --split test \
+              --no-judge \
+              --json > "nightly-$model.json"
+            echo "::endgroup::"
+          done
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-eval
+          path: nightly-*.json

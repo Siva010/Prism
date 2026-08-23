@@ -4,9 +4,10 @@ A Claude-native LLM gateway: OpenAI-compatible ingress, Anthropic Messages API
 egress, layered caching, a two-axis adaptive router, and a CI-gated evaluation
 harness.
 
-**Status: week 5 of 12.** The proxy skeleton, protocol translation (streaming and
-not), cost model, trace persistence, and the evaluation harness are in.
-Everything else is scaffolding with a date on it — see [Build order](#build-order).
+**Status: week 6 of 12.** The proxy skeleton, protocol translation (streaming and
+not), cost model, trace persistence, the evaluation harness, and the CI quality
+gate are in. Everything else is scaffolding with a date on it — see
+[Build order](#build-order).
 
 ---
 
@@ -40,7 +41,7 @@ from openai import OpenAI
 
 client = OpenAI(base_url="http://localhost:8000/v1", api_key="prism_sk_...")
 client.chat.completions.create(
-    model="gpt-4o",                       # mapped onto the Claude ladder
+    model="gpt-4o",  # mapped onto the Claude ladder
     messages=[{"role": "user", "content": "capital of France?"}],
 )
 ```
@@ -57,8 +58,19 @@ Run the eval suite against a running gateway:
 python scripts/eval.py --dataset datasets/golden/v1.jsonl --candidate v2 --baseline v1
 ```
 
-It exits non-zero on a regression, which is the entire interface the week-6 CI
-gate needs.
+It exits non-zero on a regression, which is the entire interface the CI gate
+needs. To gate whatever the registry says is pending:
+
+```bash
+python scripts/eval.py --auto --human-labels datasets/golden/human_labels.jsonl
+```
+
+Ship a prompt change by adding `prompts/<name>/v<N+1>.md` and opening a PR; the
+gate scores it against the active version. Promote (or roll back) with:
+
+```bash
+python scripts/promote.py assistant v2
+```
 
 ---
 
@@ -76,7 +88,8 @@ gate needs.
 | SSE streaming: block reassembly, tee-and-buffer, split timeouts | done |
 | Golden dataset, programmatic metrics, bootstrap CIs | done |
 | Pairwise LLM-as-judge with position swapping + kappa calibration | done |
-| CI regression gate | week 6 |
+| Versioned prompt registry with promote/rollback | done |
+| CI regression gate (required check) | done |
 | Prefix-breakpoint policy, semantic cache | weeks 7–8 |
 | Two-axis router | week 9 |
 | Rate limiting, circuit breakers, budgets | weeks 10–11 |
@@ -241,6 +254,56 @@ rates.
 
 ---
 
+### The gate has to be worth keeping switched on
+
+A quality gate is only useful if people do not route around it, so most of the
+design here is about not crying wolf.
+
+**It only runs when it can gate something.** The workflow is path-filtered, and
+`--auto` exits 0 without a run when the newest prompt version *is* the active
+one. A full eval run costs real money; one that fires on a README edit gets
+disabled within a week.
+
+**It fails on the interval, not the point estimate.** Covered above — a gate
+tripping on every no-op change is the same as no gate.
+
+**A missing measurement is never reported as a pass.** This is the failure mode
+the tool is most exposed to, and it was found by running the CLI with no gateway
+up: every call errors, every metric reads 0.0 *for both arms*, every delta reads
+0.0, and a naive gate calls that "no change" and goes green. So the run carries a
+failure rate, `measured()` gates on it, and a broken run exits 2 — a distinct code
+from 1, because "the gate could not run" needs a different fix from "quality
+regressed". Fork PRs, which get no secrets, fail with an explicit "NOT EVALUATED"
+summary for the same reason, and a missing `ANTHROPIC_API_KEY` fails fast before
+the run rather than after spending money on 401s.
+
+**The failure explains itself.** The job summary names which metric moved, by how
+much, with its interval, and whether the judge behind any judge-derived number was
+ever calibrated — an uncalibrated judge is labelled as such rather than presented
+as a measurement. A gate that only says "failed" gets overridden.
+
+Two workflows, deliberately separate. `ci.yml` runs lint, types, tests, and
+validates the dataset and registry — no API keys, so it runs on forks and every
+push, and a lint error is never reported as a quality regression. `eval-gate.yml`
+is the required check that costs money.
+
+### Both prompt versions live in the tree at once
+
+The candidate and the active version are both files, so the gate runs them
+against the same gateway in the same job. That makes the comparison genuinely
+paired and needs no database that survives the run, no checkout of `main`, and no
+second environment that might differ.
+
+`manifest.json` names the version serving traffic. Promotion and rollback are the
+same operation run in opposite directions — rollback is not a separate emergency
+procedure. Versions sort numerically, because sorting `v10` before `v2` as strings
+would make the gate compare the wrong pair, silently, and only once a prompt
+reached its tenth revision.
+
+The registry hashes the exact bytes of each version, whitespace included. A prompt
+edited without a version bump silently invalidates every cached prefix, so the
+hash is what gets checked rather than the version number being trusted.
+
 ### The eval harness came before the cache and the router
 
 Both need it as ground truth. The cache's operating point is a precision/recall
@@ -321,8 +384,11 @@ src/prism/
   db/               SQLAlchemy models, engine, repository
   tracing/          trace assembly and background persistence
   eval/             golden dataset, metrics, judge, calibration, bootstrap stats
+  prompts.py        versioned prompt registry; cache-key and gate input
 migrations/         idempotent SQL, applied on first boot and by scripts/migrate.py
 datasets/golden/    the golden set, versioned next to the code
+prompts/            prompt versions + manifest.json naming the active one
+.github/workflows/  ci.yml (free, always) and eval-gate.yml (costs money)
 ```
 
 ## Endpoints
@@ -347,7 +413,7 @@ Every completion response carries `x-prism-model` (what actually ran),
    first-token vs total timeout split, client-disconnect handling ✅
 3. **Weeks 4–5** — eval harness *before* the cache and the router, because both
    need it as ground truth ✅
-4. **Week 6** — CI regression gate
+4. **Week 6** — CI regression gate ✅
 5. **Weeks 7–8** — prefix breakpoint policy and measurement, then the semantic
    layer with its labelled pair set and ROC curve
 6. **Week 9** — the two-axis router

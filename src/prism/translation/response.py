@@ -54,12 +54,8 @@ def to_openai_usage(usage: TokenUsage) -> Usage:
         prompt_tokens=prompt_tokens,
         completion_tokens=usage.output_tokens,
         total_tokens=prompt_tokens + usage.output_tokens,
-        prompt_tokens_details=PromptTokensDetails(
-            cached_tokens=usage.cache_read_input_tokens
-        ),
-        completion_tokens_details=CompletionTokensDetails(
-            reasoning_tokens=usage.thinking_tokens
-        ),
+        prompt_tokens_details=PromptTokensDetails(cached_tokens=usage.cache_read_input_tokens),
+        completion_tokens_details=CompletionTokensDetails(reasoning_tokens=usage.thinking_tokens),
         # OpenAI's usage object has no slot for cache *writes*. Omitting them
         # would make the returned usage uncostable, so they travel in a
         # namespaced field and are always authoritative on the trace.

@@ -93,9 +93,7 @@ def _content_to_blocks(content: str | list[ContentPart] | None) -> list[dict[str
         elif url.startswith(("http://", "https://")):
             blocks.append({"type": "image", "source": {"type": "url", "url": url}})
         else:
-            raise _invalid(
-                "image_url must be an http(s) URL or a base64 data URI.", "messages"
-            )
+            raise _invalid("image_url must be an http(s) URL or a base64 data URI.", "messages")
     return blocks
 
 
@@ -144,9 +142,7 @@ def _parse_arguments(call: ToolCall) -> dict[str, Any]:
             "messages",
         ) from exc
     if not isinstance(parsed, dict):
-        raise _invalid(
-            f"tool_call {call.id!r} arguments must decode to a JSON object.", "messages"
-        )
+        raise _invalid(f"tool_call {call.id!r} arguments must decode to a JSON object.", "messages")
     return parsed
 
 
@@ -168,9 +164,7 @@ def _build_messages(
     for message in messages:
         if message.role == "tool":
             if not message.tool_call_id:
-                raise _invalid(
-                    "A message with role 'tool' requires 'tool_call_id'.", "messages"
-                )
+                raise _invalid("A message with role 'tool' requires 'tool_call_id'.", "messages")
             # Tool results are user-turn content blocks upstream. Consecutive tool
             # messages therefore merge into a single user turn — emitting one user
             # message each would break alternation and would train the model out of
@@ -216,9 +210,7 @@ def _build_messages(
         raise _invalid(f"Unsupported message role {message.role!r}.", "messages")
 
     if not out:
-        raise _invalid(
-            "`messages` must contain at least one non-system message.", "messages"
-        )
+        raise _invalid("`messages` must contain at least one non-system message.", "messages")
     if out[0]["role"] != "user":
         raise _invalid("The first non-system message must have role 'user'.", "messages")
     return out, warnings
@@ -265,9 +257,7 @@ def _build_output_config(
     fmt = req.response_format
     if fmt is not None and fmt.type == "json_schema":
         if fmt.json_schema is None or fmt.json_schema.schema_ is None:
-            raise _invalid(
-                "response_format.json_schema requires a `schema`.", "response_format"
-            )
+            raise _invalid("response_format.json_schema requires a `schema`.", "response_format")
         config["format"] = {"type": "json_schema", "schema": fmt.json_schema.schema_}
     elif fmt is not None and fmt.type == "json_object":
         # `json_object` has no schema to compile a grammar from. Week 8 replaces
@@ -340,9 +330,7 @@ def translate(
 
     system_blocks, conversation = _extract_system(req.messages)
     if system_blocks and req.messages[0].role not in ("system", "developer"):
-        warnings.append(
-            TranslationWarning("system_message_hoisted_from_mid_conversation")
-        )
+        warnings.append(TranslationWarning("system_message_hoisted_from_mid_conversation"))
 
     messages, fold_warnings = _build_messages(conversation)
     warnings.extend(fold_warnings)

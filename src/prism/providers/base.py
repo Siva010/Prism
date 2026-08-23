@@ -103,9 +103,7 @@ class StreamHandle:
         loop = asyncio.get_running_loop()
         started = loop.time()
         first_deadline = (
-            started + self.first_token_timeout_s
-            if self.first_token_timeout_s is not None
-            else None
+            started + self.first_token_timeout_s if self.first_token_timeout_s is not None else None
         )
         total_deadline = (
             started + self.total_timeout_s if self.total_timeout_s is not None else None

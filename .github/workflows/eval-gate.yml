@@ -1,0 +1,149 @@
+name: Eval gate
+
+# The required check. A prompt change that degrades quality beyond the
+# confidence interval fails the build.
+#
+# Three deliberate choices here:
+#
+# 1. It runs only when something it can actually gate has changed. A full eval
+#    run costs real money, and a gate that burns it on a README edit gets
+#    switched off.
+# 2. It needs secrets, so it cannot run on pull requests from forks. That case
+#    is reported explicitly as "not evaluated" rather than being allowed to look
+#    like a pass — a green tick nobody earned is worse than a missing one.
+# 3. Both prompt versions live in the tree at once, so candidate and baseline
+#    run against the same gateway in the same job. That makes the comparison
+#    genuinely paired, and needs no database that survives the run.
+
+on:
+  pull_request:
+    paths:
+      - "prompts/**"
+      - "datasets/golden/**"
+      - "src/prism/**"
+      - ".github/workflows/eval-gate.yml"
+  workflow_dispatch:
+    inputs:
+      tolerance:
+        description: "Quality drop to accept (e.g. 0.05 for a cheaper tier)"
+        default: "0.0"
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  fork-notice:
+    # Fork PRs get no secrets. Say so, loudly, instead of silently passing.
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    steps:
+      - name: Explain why the gate did not run
+        run: |
+          {
+            echo "## Eval gate: NOT EVALUATED"
+            echo
+            echo "This pull request comes from a fork, so it has no access to the"
+            echo "API keys the eval suite needs. Quality has **not** been measured."
+            echo
+            echo "A maintainer must run the gate from a branch in this repository"
+            echo "before merging a prompt change."
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+  gate:
+    if: github.event_name == 'workflow_dispatch' || !github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      postgres:
+        image: pgvector/pgvector:pg17
+        env:
+          POSTGRES_USER: prism
+          POSTGRES_PASSWORD: prism
+          POSTGRES_DB: prism
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U prism -d prism"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+      redis:
+        image: redis:7-alpine
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+
+    env:
+      PRISM_DATABASE_URL: postgresql+asyncpg://prism:prism@localhost:5432/prism
+      PRISM_REDIS_URL: redis://localhost:6379/0
+      PRISM_URL: http://localhost:8000
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      PRISM_JUDGE_MODEL: ${{ vars.PRISM_JUDGE_MODEL }}
+      PRISM_JUDGE_API_KEY: ${{ secrets.PRISM_JUDGE_API_KEY }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Fail fast if the upstream key is missing
+        # Without this the gate would run, every request would 401, every
+        # example would score zero, and the result would read as a catastrophic
+        # regression rather than a misconfiguration.
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "::error::ANTHROPIC_API_KEY is not set; the gate cannot measure anything."
+            exit 1
+          fi
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install
+        run: uv sync --extra dev || uv pip install --system -e ".[dev]"
+
+      - name: Migrate
+        run: uv run python scripts/migrate.py
+
+      - name: Mint a tenant key
+        id: tenant
+        run: |
+          KEY=$(uv run python scripts/create_tenant.py ci "CI" | awk '/^api key/ {print $3}')
+          echo "::add-mask::$KEY"
+          echo "key=$KEY" >> "$GITHUB_OUTPUT"
+
+      - name: Start the gateway
+        run: |
+          uv run uvicorn prism.main:app --app-dir src --port 8000 --log-level warning &
+          for _ in $(seq 1 40); do
+            if curl -sf http://localhost:8000/healthz > /dev/null; then
+              echo "gateway up"; exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::gateway did not become healthy"; exit 1
+
+      - name: Run the gate
+        id: eval
+        env:
+          PRISM_API_KEY: ${{ steps.tenant.outputs.key }}
+        run: |
+          uv run python scripts/eval.py \
+            --auto \
+            --dataset datasets/golden/v1.jsonl \
+            --split test \
+            --tolerance "${{ github.event.inputs.tolerance || '0.0' }}" \
+            --human-labels datasets/golden/human_labels.jsonl
+
+      - name: Upload the run
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-run
+          path: |
+            eval-*.json
+          if-no-files-found: ignore

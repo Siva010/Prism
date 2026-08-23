@@ -36,9 +36,7 @@ class Tenant(Base):
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
     slug: Mapped[str] = mapped_column(Text, unique=True)
     name: Mapped[str] = mapped_column(Text)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
 
 
@@ -53,9 +51,7 @@ class ApiKey(Base):
     key_prefix: Mapped[str] = mapped_column(Text)
     label: Mapped[str] = mapped_column(Text, default="")
     scopes: Mapped[list[str]] = mapped_column(ARRAY(Text), default=list)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     last_used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -64,9 +60,7 @@ class Trace(Base):
     __tablename__ = "traces"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     tenant_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
     api_key_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))

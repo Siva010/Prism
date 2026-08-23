@@ -58,9 +58,7 @@ async def authenticate(session: AsyncSession, presented_key: str) -> Principal |
 
 async def touch_key(session: AsyncSession, api_key_id: uuid.UUID) -> None:
     await session.execute(
-        update(ApiKey)
-        .where(ApiKey.id == api_key_id)
-        .values(last_used_at=datetime.now(UTC))
+        update(ApiKey).where(ApiKey.id == api_key_id).values(last_used_at=datetime.now(UTC))
     )
 
 
@@ -107,6 +105,4 @@ async def list_traces(
 
 
 async def get_trace(session: AsyncSession, trace_id: uuid.UUID) -> Trace | None:
-    return (
-        await session.execute(select(Trace).where(Trace.id == trace_id))
-    ).scalar_one_or_none()
+    return (await session.execute(select(Trace).where(Trace.id == trace_id))).scalar_one_or_none()
