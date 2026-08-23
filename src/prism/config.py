@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -33,6 +34,26 @@ class Settings(BaseSettings):
     request_timeout_s: float = 600.0
     first_token_timeout_s: float = 30.0
     connect_timeout_s: float = 5.0
+
+    # A large thinking budget legitimately delays the first *visible* token, so
+    # the first-token budget has to be conditioned on the routing decision rather
+    # than fixed. Week 9's router will set this per request; today it applies
+    # whenever the request asked for thinking.
+    thinking_first_token_timeout_s: float = 120.0
+
+    # What to do with an in-flight upstream stream when the client hangs up.
+    # False (default): abandon it, which closes the connection and stops
+    # generation, so the tokens are not paid for. True: keep consuming to
+    # completion. Worth revisiting in week 8 — once a semantic cache exists, a
+    # completed entry has value that a partial one does not, and draining buys
+    # that value for the cost of the remaining tokens.
+    stream_drain_on_disconnect: bool = False
+
+    # Thinking text on persisted traces: persist | redact | drop. Summarized
+    # thinking is useful for debugging a bad answer, and it is also the most
+    # sensitive thing in the trace, so this is a deliberate switch rather than an
+    # accident of implementation.
+    trace_thinking: Literal["persist", "redact", "drop"] = "persist"
 
     log_level: str = "INFO"
     trace_bodies: bool = True

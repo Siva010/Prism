@@ -26,17 +26,13 @@ def test_cache_reads_price_at_a_tenth_and_writes_at_a_premium():
     writes = compute_cost(TokenUsage(cache_creation_input_tokens=1_000_000), OPUS)
     assert writes.cache_write_usd == Decimal("6.250")
 
-    long_ttl = compute_cost(
-        TokenUsage(cache_creation_input_tokens=1_000_000), OPUS, cache_ttl="1h"
-    )
+    long_ttl = compute_cost(TokenUsage(cache_creation_input_tokens=1_000_000), OPUS, cache_ttl="1h")
     assert long_ttl.cache_write_usd == Decimal("10.0")
 
 
 def test_the_naive_model_overstates_a_cache_heavy_request():
     # 90% prefix hit rate: the naive model bills every input token at list price.
-    usage = TokenUsage(
-        input_tokens=100_000, cache_read_input_tokens=900_000, output_tokens=1_000
-    )
+    usage = TokenUsage(input_tokens=100_000, cache_read_input_tokens=900_000, output_tokens=1_000)
     real = compute_cost(usage, OPUS).total_usd
     naive = naive_cost(usage, OPUS)
     assert naive > real * 2

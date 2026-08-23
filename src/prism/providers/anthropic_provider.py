@@ -13,12 +13,14 @@ eval judge, the embedding backfills, and the batch runner.
 from __future__ import annotations
 
 import time
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
 
 from ..schemas.errors import ErrorKind, PrismError
-from .base import ProviderResponse, RateLimitSnapshot
+from .base import ProviderResponse, RateLimitSnapshot, StreamHandle
 
 ANTHROPIC_VERSION = "2023-06-01"
 
@@ -100,6 +102,7 @@ class AnthropicProvider:
         connect_timeout_s: float = 5.0,
         max_connections: int = 200,
     ) -> None:
+        self._connect_timeout_s = connect_timeout_s
         self._client = httpx.AsyncClient(
             base_url=base_url.rstrip("/"),
             timeout=httpx.Timeout(timeout_s, connect=connect_timeout_s),
@@ -169,6 +172,86 @@ class AnthropicProvider:
             latency_ms=latency_ms,
             rate_limits=rate_limits,
         )
+
+    @asynccontextmanager
+    async def stream_message(
+        self,
+        body: dict[str, Any],
+        *,
+        first_token_timeout_s: float | None = None,
+        total_timeout_s: float | None = None,
+    ) -> AsyncIterator[StreamHandle]:
+        """Open an SSE stream. The context manager owns closing the connection."""
+        payload = {**body, "stream": True}
+        request = self._client.build_request(
+            "POST",
+            "/v1/messages",
+            json=payload,
+            headers={"accept": "text/event-stream"},
+            # httpx's read timeout would fire between SSE frames, which on a
+            # healthy but slow generation is a false positive. The real budgets
+            # are enforced by StreamHandle against absolute deadlines.
+            timeout=httpx.Timeout(
+                total_timeout_s, connect=self._connect_timeout_s, read=None
+            ),
+        )
+        try:
+            response = await self._client.send(request, stream=True)
+        except httpx.TimeoutException as exc:
+            raise PrismError(
+                ErrorKind.UPSTREAM_TIMEOUT,
+                f"Upstream stream did not open in time: {exc}",
+                status_code=504,
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise PrismError(
+                ErrorKind.UPSTREAM_CONNECTION,
+                f"Could not reach the upstream provider: {exc}",
+                status_code=502,
+            ) from exc
+
+        try:
+            if response.status_code >= 400:
+                # The failure arrived before any bytes were streamed, so it can
+                # still be surfaced as a normal HTTP error with a status code.
+                await response.aread()
+                kind = classify_status(response.status_code)
+                try:
+                    error_payload = response.json()
+                    message = (
+                        error_payload.get("error") or {}
+                    ).get("message") or response.text
+                except ValueError:
+                    error_payload = {"raw": response.text}
+                    message = response.text
+                rate_limits = parse_rate_limits(response.headers)
+                raise PrismError(
+                    kind,
+                    message,
+                    status_code=429
+                    if kind is ErrorKind.UPSTREAM_RATE_LIMIT
+                    else (
+                        503
+                        if kind is ErrorKind.UPSTREAM_OVERLOADED
+                        else response.status_code
+                    ),
+                    retry_after=rate_limits.retry_after_s,
+                    upstream_status=response.status_code,
+                    upstream_body=error_payload,
+                )
+
+            yield StreamHandle(
+                response.aiter_lines(),
+                provider_request_id=response.headers.get("request-id"),
+                rate_limits=parse_rate_limits(response.headers),
+                first_token_timeout_s=first_token_timeout_s,
+                total_timeout_s=total_timeout_s,
+            )
+        finally:
+            # Closing an unfinished response tells the upstream to stop
+            # generating, which is what makes abandoning a disconnected client's
+            # request actually save tokens.
+            await response.aclose()
 
     async def aclose(self) -> None:
         await self._client.aclose()

@@ -49,7 +49,9 @@ def test_cost_and_cache_headers_are_present(client):
     assert resp.headers["x-prism-upstream-latency-ms"] == "42"
 
 
-def test_streaming_is_refused_explicitly_not_silently_buffered(client):
+def test_stream_true_is_served_as_sse_not_as_one_buffered_blob(client):
+    # See test_stream_endpoint.py for the reassembly itself; this only pins the
+    # branch — a client asking for tokens as they arrive must not get JSON.
     resp = client.post(
         "/v1/chat/completions",
         json={
@@ -58,8 +60,8 @@ def test_streaming_is_refused_explicitly_not_silently_buffered(client):
             "stream": True,
         },
     )
-    assert resp.status_code == 501
-    assert "stream" in resp.json()["error"]["message"].lower()
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
 
 
 def test_unknown_model_is_a_404_with_an_openai_shaped_error(client):
