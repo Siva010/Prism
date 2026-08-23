@@ -47,6 +47,22 @@ class Settings(BaseSettings):
     # that value for the cost of the remaining tokens.
     stream_drain_on_disconnect: bool = False
 
+    # --- Layer 1: provider prefix cache (week 7) ---
+    cache_enabled: bool = True
+    # "5m" or "1h". A 1h write costs 2x the base input rate instead of 1.25x, so
+    # it only pays back on prefixes reused for longer than five minutes.
+    cache_ttl: str = "5m"
+    # Cache the conversation prefix as well as tools/system. Off by default:
+    # history is per-conversation, so on single-turn traffic it is pure write
+    # cost for reads that never arrive.
+    cache_conversation_prefix: bool = False
+    # Whether tool schemas may be treated as tenant-independent. True suits tool
+    # definitions checked into the repo; a deployment that builds tool
+    # descriptions from customer data must set this False, because nothing in
+    # the code can detect that.
+    cache_trust_tools: bool = True
+    prompts_root: str = "prompts"
+
     # Thinking text on persisted traces: persist | redact | drop. Summarized
     # thinking is useful for debugging a bad answer, and it is also the most
     # sensitive thing in the trace, so this is a deliberate switch rather than an

@@ -4,10 +4,10 @@ A Claude-native LLM gateway: OpenAI-compatible ingress, Anthropic Messages API
 egress, layered caching, a two-axis adaptive router, and a CI-gated evaluation
 harness.
 
-**Status: week 6 of 12.** The proxy skeleton, protocol translation (streaming and
-not), cost model, trace persistence, the evaluation harness, and the CI quality
-gate are in. Everything else is scaffolding with a date on it — see
-[Build order](#build-order).
+**Status: week 7 of 12.** The proxy, protocol translation (streaming and not),
+cost model, trace persistence, evaluation harness, CI quality gate, and the
+provider prefix-cache layer are in. Everything else is scaffolding with a date
+on it — see [Build order](#build-order).
 
 ---
 
@@ -90,7 +90,9 @@ python scripts/promote.py assistant v2
 | Pairwise LLM-as-judge with position swapping + kappa calibration | done |
 | Versioned prompt registry with promote/rollback | done |
 | CI regression gate (required check) | done |
-| Prefix-breakpoint policy, semantic cache | weeks 7–8 |
+| Prefix-cache breakpoint policy + placement report | done |
+| Local token estimator + calibration harness | done |
+| Semantic cache (pgvector/HNSW) + ROC calibration | week 8 |
 | Two-axis router | week 9 |
 | Rate limiting, circuit breakers, budgets | weeks 10–11 |
 | Dashboard | week 12 |
@@ -304,6 +306,59 @@ The registry hashes the exact bytes of each version, whitespace included. A prom
 edited without a version bump silently invalidates every cached prefix, so the
 hash is what gets checked rather than the version number being trusted.
 
+### A bad breakpoint is worse than no breakpoint
+
+Cache writes carry a ~25% surcharge; reads are ~90% off. A breakpoint on content
+that changes every request pays the premium every time and never reads back — so
+it is strictly worse than not caching at all. The policy therefore refuses to
+place a marker in three situations: below the model's minimum cacheable prefix
+(the marker is ignored anyway, and the API only gives you four), on the final
+message (different on every request by definition), and on the conversation
+prefix by default (history only pays back on multi-turn traffic).
+
+The metric that catches a mistake here is the **write/read ratio**, reported per
+prompt version by `GET /admin/stats/cache`. Persistently above ~1 means the
+breakpoints are sitting on volatile content. That endpoint was built in week 2,
+before there was anything to measure, so this work had a number to aim at rather
+than a hit rate to admire.
+
+### Breakpoint placement is a security boundary
+
+This is the part worth saying out loud. Prefix cache entries are isolated per
+*organization*, not per tenant. A deployment using one API key for all tenants
+shares that organization, so the prefix is shared too — and marking a prefix that
+contains tenant A's data makes it reachable by tenant B.
+
+So the placer will not accept "this is probably the same for everyone". It takes
+an explicit scope per level and refuses to mark anything not proven
+tenant-independent, and `policy.py` is what earns that proof: it places a
+breakpoint on the system prompt only when the bytes about to be sent are
+**byte-identical** to a versioned artifact in the prompt registry. A caller who
+claims `assistant@v1` but appends tenant context gets no breakpoint and a recorded
+reason, because the claim is now false. Conversation history is never shared. Tool
+schemas are shared by default, since they are repo artifacts — but that is a
+deployment assumption, so `cache_trust_tools` exists and nothing in the code
+pretends it can detect tool descriptions built from customer data.
+
+The defaults are the safe answers, which means the failure mode of forgetting to
+configure this is a missed optimisation rather than a leak.
+
+### The token estimator says how wrong it is
+
+Placement needs a token count *before* dispatch, and the ground-truth oracle —
+the counting endpoint — costs a round trip, which is unacceptable on the hot path
+of a component whose whole job is saving money. So there is a cheap local
+estimator plus a calibration harness that measures its error against the oracle
+offline.
+
+What the harness reports is the **distribution, both tails**, not an accuracy
+figure. The two consumers care about opposite ends: breakpoint placement
+over-estimating means marking a block too small to cache (wasted, harmless), while
+rate-limit reservation under-estimating means over-committing a bucket and
+tripping a 429 (week 10). A mean would hide which is happening. Until someone runs
+`calibrate()` against a real key, `EstimatorReport.calibrated` is False and
+nothing here claims otherwise.
+
 ### The eval harness came before the cache and the router
 
 Both need it as ground truth. The cache's operating point is a precision/recall
@@ -385,6 +440,8 @@ src/prism/
   tracing/          trace assembly and background persistence
   eval/             golden dataset, metrics, judge, calibration, bootstrap stats
   prompts.py        versioned prompt registry; cache-key and gate input
+  tokens.py         local estimator + calibration against the counting endpoint
+  caching/          breakpoint placement policy and the scope decision behind it
 migrations/         idempotent SQL, applied on first boot and by scripts/migrate.py
 datasets/golden/    the golden set, versioned next to the code
 prompts/            prompt versions + manifest.json naming the active one
@@ -414,8 +471,8 @@ Every completion response carries `x-prism-model` (what actually ran),
 3. **Weeks 4–5** — eval harness *before* the cache and the router, because both
    need it as ground truth ✅
 4. **Week 6** — CI regression gate ✅
-5. **Weeks 7–8** — prefix breakpoint policy and measurement, then the semantic
-   layer with its labelled pair set and ROC curve
+5. **Weeks 7–8** — prefix breakpoint policy and measurement ✅, then the
+   semantic layer with its labelled pair set and ROC curve
 6. **Week 9** — the two-axis router
 7. **Weeks 10–11** — rate limiting, circuit breakers, failover, budgets
 8. **Week 12** — dashboard

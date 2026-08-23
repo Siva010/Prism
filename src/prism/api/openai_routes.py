@@ -11,8 +11,11 @@ from typing import Any
 from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
+from ..caching.breakpoints import CachePolicy
+from ..caching.policy import apply_to_request
 from ..cost import compute_cost
 from ..logging_setup import get_logger
+from ..prompts import Registry
 from ..registry import MODELS, ModelSpec, UnknownModelError, resolve_model
 from ..schemas.errors import ErrorKind, PrismError
 from ..schemas.openai import ChatCompletionRequest
@@ -101,9 +104,26 @@ async def create_chat_completion(
     except PrismError as exc:
         raise fail(exc) from exc
 
-    draft.upstream_request = upstream_body
     if warnings:
         draft.extra["translation_warnings"] = sorted(set(warnings))
+
+    # Layer 1: place prefix-cache breakpoints. Runs after translation because it
+    # is a policy over the finished upstream body, and before dispatch because
+    # the markers are part of what gets sent.
+    upstream_body, placement, scopes = apply_to_request(
+        upstream_body,
+        CachePolicy.for_tier(
+            spec.tier,
+            enabled=settings.cache_enabled,
+            ttl=settings.cache_ttl,
+            cache_conversation_prefix=settings.cache_conversation_prefix,
+        ),
+        prompt_version=body.prism.prompt_version if body.prism else None,
+        registry=Registry(settings.prompts_root),
+        trust_tools=settings.cache_trust_tools,
+    )
+    draft.extra["prefix_cache"] = placement.as_json() | {"scopes": scopes.as_json()}
+    draft.upstream_request = upstream_body
 
     if body.stream:
         frames = _stream_completion(

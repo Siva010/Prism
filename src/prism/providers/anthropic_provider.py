@@ -240,5 +240,26 @@ class AnthropicProvider:
             # request actually save tokens.
             await response.aclose()
 
+    async def count_tokens(self, body: dict[str, Any]) -> int:
+        """Exact input-token count from the provider.
+
+        The ground-truth oracle for `tokens.calibrate()`. It costs a full round
+        trip, so it is never called on the hot path — the local estimator is used
+        there, and this is what measures how wrong the estimator is.
+        """
+        payload = {
+            k: v
+            for k, v in body.items()
+            if k in ("model", "messages", "system", "tools", "tool_choice")
+        }
+        response = await self._client.post("/v1/messages/count_tokens", json=payload)
+        if response.status_code >= 400:
+            raise PrismError(
+                classify_status(response.status_code),
+                f"token counting failed: {response.text[:200]}",
+                status_code=response.status_code,
+            )
+        return int(response.json()["input_tokens"])
+
     async def aclose(self) -> None:
         await self._client.aclose()

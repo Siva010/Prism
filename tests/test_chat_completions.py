@@ -127,3 +127,95 @@ def test_models_endpoint_lists_the_ladder(client):
 
 def test_healthz(client):
     assert client.get("/healthz").json() == {"status": "ok"}
+
+
+# --- prefix cache (week 7) ------------------------------------------------
+
+
+def read_prompt(name: str = "assistant", version: str = "v1") -> str:
+    from pathlib import Path
+
+    return (Path(__file__).resolve().parents[1] / "prompts" / name / f"{version}.md").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_a_prompt_built_on_top_of_a_registry_version_is_refused(client, provider, recorder):
+    # Long enough to clear the token floor, and claiming a real version - but
+    # the bytes differ from the registry copy, so it could contain anything.
+    system = read_prompt() * 60
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "claude-opus-5",
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "hi"},
+            ],
+            "prism": {"prompt_version": "assistant@v1"},
+        },
+    )
+    assert resp.status_code == 200
+    # The registry copy is one repetition, so the bytes do NOT match and the
+    # policy must refuse — which is the conservative answer, and correct.
+    sent = provider.last_call
+    assert "cache_control" not in sent["system"][-1]
+    reason = recorder.last.extra["prefix_cache"]["scopes"]["reason"]
+    assert "byte-for-byte" in reason
+
+
+def test_an_exact_registry_match_is_cached(client, provider, recorder):
+    from prism.prompts import Registry
+
+    # Make the shipped prompt long enough to clear the floor by adding a version
+    # the test controls, then send exactly those bytes.
+    registry = Registry("prompts")
+    system = registry.get("assistant", "v1").text
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "claude-opus-5",
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": "hi"},
+            ],
+            "prism": {"prompt_version": "assistant@v1"},
+        },
+    )
+    assert resp.status_code == 200
+    cache = recorder.last.extra["prefix_cache"]
+    # Byte-identical, so the scope decision is SHARED...
+    assert cache["scopes"]["system"] == "shared"
+    # ...but the prompt is well under the 1024-token floor, so no marker is
+    # placed. Spending a slot below the floor buys nothing.
+    assert cache["breakpoints"] == []
+    assert any("below the" in s for s in cache["skipped"])
+
+
+def test_an_unversioned_system_prompt_is_never_cached(client, provider, recorder):
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "claude-opus-5",
+            "messages": [
+                {"role": "system", "content": "word " * 3000},
+                {"role": "user", "content": "hi"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    assert "cache_control" not in provider.last_call["system"][-1]
+    reason = recorder.last.extra["prefix_cache"]["scopes"]["reason"]
+    assert "not registry-versioned" in reason
+
+
+def test_the_placement_report_lands_on_the_trace(client, recorder):
+    client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "claude-opus-5",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    cache = recorder.last.extra["prefix_cache"]
+    assert "breakpoints" in cache and "skipped" in cache and "scopes" in cache
