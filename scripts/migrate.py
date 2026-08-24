@@ -47,9 +47,13 @@ async def main() -> int:
             continue
         print(f"  apply {version}")
         async with engine.begin() as conn:
-            # exec_driver_sql: the migration files contain multiple statements and
-            # dollar-quoted bodies that SQLAlchemy's text() would try to bind.
-            await conn.exec_driver_sql(path.read_text(encoding="utf-8"))
+            # Straight to the asyncpg connection. A migration file is many
+            # statements, and every path through SQLAlchemy -- text() and
+            # exec_driver_sql() alike -- hands asyncpg a prepared statement,
+            # which rejects multi-statement SQL outright. asyncpg's own
+            # execute() uses the simple query protocol, which does not.
+            raw = await conn.get_raw_connection()
+            await raw.driver_connection.execute(path.read_text(encoding="utf-8"))
             await conn.execute(
                 text(
                     "INSERT INTO schema_migrations (version) VALUES (:v) "

@@ -52,6 +52,12 @@ Tests, lint, and types:
 pytest && ruff check . && mypy src/prism
 ```
 
+Most of the suite runs against fakes and needs nothing running. The tests in
+`tests/test_integration_db.py` need Postgres and skip cleanly without it — they
+cover the things whose failure mode only appears against a real server, which is
+a category this project learned about the hard way (see [Verified
+against](#verified-against-what)).
+
 Run the eval suite against a running gateway:
 
 ```bash
@@ -102,6 +108,32 @@ python scripts/promote.py assistant v2
 ---
 
 ---
+
+---
+
+## Verified against what
+
+Worth being explicit, because "the tests pass" and "this works" are different
+claims.
+
+| | state |
+|---|---|
+| Translation, streaming, cost model, eval harness, cache logic, router | unit-tested against fakes |
+| Migrations 0001–0003, pgvector round-trip, HNSW index, scope isolation in SQL | verified against real Postgres |
+| Semantic-cache calibration and the three-configuration replay | measured with the real `bge-small-en-v1.5` |
+| **Anthropic Messages API** | **never called.** No request in this repo has reached a real provider. |
+
+That last row is the honest limit of everything here. The gateway has been
+exercised end-to-end against a scripted upstream, and the translation is written
+against the documented wire format, but the first real request is still ahead.
+
+One bug worth recording, because it is the argument for the integration tests:
+`scripts/migrate.py` was **broken from week 1 to week 9 and nothing noticed**.
+Migration 0001 was applied by the Postgres container's initdb entrypoint, so the
+runner itself never ran; migrations 0002 and 0003 would have failed on first use.
+asyncpg rejects multi-statement SQL through a prepared statement, and every path
+through SQLAlchemy — `text()` and `exec_driver_sql()` alike — hands it one. The
+fix is to go to asyncpg's own `execute()`, which uses the simple query protocol.
 
 ## The result
 
