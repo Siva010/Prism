@@ -79,6 +79,21 @@ class Settings(BaseSettings):
     # HNSW recall/latency dial, set per session rather than baked into the index.
     hnsw_ef_search: int = 40
 
+    # --- Two-axis router (week 9) ---
+    # Engaged only for requests that ask for the model "prism-auto"; every other
+    # model name is served as requested. Off by default because an untrained
+    # router adds a moving part to reach the same answer.
+    router_enabled: bool = False
+    router_model_path: str = "data/router.joblib"
+    # none | verify_then_escalate. The mode changes the break-even threshold:
+    # with escalation the constraint is expected cost, without it the constraint
+    # is a quality floor.
+    router_mode: Literal["none", "verify_then_escalate"] = "verify_then_escalate"
+    router_quality_floor: float = 0.85
+    # Verifier cost as a fraction of the cheap call; raises the bar for routing
+    # down, since it is paid on every request rather than only on failures.
+    router_verifier_fraction: float = 0.0
+
     # Thinking text on persisted traces: persist | redact | drop. Summarized
     # thinking is useful for debugging a bad answer, and it is also the most
     # sensitive thing in the trace, so this is a deliberate switch rather than an

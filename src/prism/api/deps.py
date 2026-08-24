@@ -37,6 +37,11 @@ def get_semantic_cache(request: Request) -> Any:
     return getattr(request.app.state, "semantic_cache", None)
 
 
+def get_router_policy(request: Request) -> Any:
+    """The two-axis router, or None when disabled."""
+    return getattr(request.app.state, "router_policy", None)
+
+
 async def get_principal(
     authorization: Annotated[str | None, Header()] = None,
     settings: Annotated[Settings, Depends(get_settings)] = None,  # type: ignore[assignment]
@@ -69,3 +74,4 @@ SettingsDep = Annotated[Settings, Depends(get_settings)]
 ProviderDep = Annotated[Provider, Depends(get_provider)]
 RecorderDep = Annotated[TraceRecorder, Depends(get_recorder)]
 SemanticCacheDep = Annotated[Any, Depends(get_semantic_cache)]
+RouterDep = Annotated[Any, Depends(get_router_policy)]

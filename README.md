@@ -4,10 +4,10 @@ A Claude-native LLM gateway: OpenAI-compatible ingress, Anthropic Messages API
 egress, layered caching, a two-axis adaptive router, and a CI-gated evaluation
 harness.
 
-**Status: week 8 of 12.** The proxy, protocol translation (streaming and not),
-cost model, trace persistence, evaluation harness, CI quality gate, and both
-cache layers are in. Everything else is scaffolding with a date on it — see
-[Build order](#build-order).
+**Status: week 9 of 12.** The proxy, protocol translation (streaming and not),
+cost model, trace persistence, evaluation harness, CI quality gate, both cache
+layers, and the two-axis router are in. Everything else is scaffolding with a
+date on it — see [Build order](#build-order).
 
 ---
 
@@ -95,7 +95,7 @@ python scripts/promote.py assistant v2
 | Semantic cache (pgvector/HNSW), scoped and calibrated | done |
 | Three-configuration replay + threshold ROC sweep | done |
 | Exact-match Redis layer | week 10 (with the rate-limit buckets) |
-| Two-axis router | week 9 |
+| Two-axis router (tier + reasoning budget) | done |
 | Rate limiting, circuit breakers, budgets | weeks 10–11 |
 | Dashboard | week 12 |
 
@@ -414,6 +414,94 @@ tripping a 429 (week 10). A mean would hide which is happening. Until someone ru
 `calibrate()` against a real key, `EstimatorReport.calibrated` is False and
 nothing here claims otherwise.
 
+### The router's threshold is derived, not tuned
+
+Most routers pick a difficulty cutoff by hand and defend it with a plot. There is
+no need. Let `p` be the probability the cheap tier produces an acceptable answer,
+`c` the cheap call's cost, `e` the expensive one's, and assume a failure is
+retried upstream:
+
+```
+E[cost | route cheap]     = c + (1 - p) · e
+E[cost | route expensive] = e
+```
+
+Routing down wins exactly when `c + (1-p)e < e`, i.e. **`p > c/e`**. The threshold
+*is* the cost ratio. Measured against the current price list:
+
+| downgrade | cost ratio | route down when |
+|---|---|---|
+| Haiku 4.5 vs Opus 5 | 0.200 | P(success) > **0.200** |
+| Sonnet 5 vs Opus 5 | 0.400 | P(success) > **0.400** |
+| Haiku 4.5 vs Sonnet 5 | 0.500 | P(success) > **0.500** |
+
+Four wasted Haiku calls still cost less than one avoided Opus call, so routing
+down to Haiku is right far more often than instinct suggests. And the numbers move
+with the price list — Haiku-vs-Sonnet sits at 0.5 right now only because Sonnet is
+on introductory pricing, which is exactly the kind of thing a hand-tuned constant
+would get silently wrong.
+
+Two refinements: a verifier is paid on *every* request, so verify-then-escalate
+raises the bar to `(c+v)/e`; and without escalation a bad cheap answer is simply
+delivered, so money always favours routing down and a **quality floor** has to
+bind instead. Both modes are implemented and the difference is explicit.
+
+Because the rule compares a probability against a cost ratio, the classifier has
+to be **calibrated**, not merely well-ranked. Brier score is reported next to AUC
+for that reason.
+
+### Why logistic regression, and what that buys
+
+A few hundred rows, a few dozen features, one binary question. Logistic regression
+trains in under a second, needs no GPU, and — the part that matters — has readable
+coefficients. From the demo run:
+
+```
+lookup_markers     +0.2492      reasoning_markers  -0.2492
+n_question_marks   +0.2492      avg_word_length    -0.3138
+                                query_chars        -0.2717
+```
+
+"Why was this routed up?" has a one-sentence answer. Fine-tuning a model for this
+would cost orders of magnitude more, be unexplainable, and be worse — the signal
+lives in request shape, not in language modelling. Reaching for the simplest
+sufficient tool is the point, and being able to say why is most of the value.
+
+The embedding is projected from 384 dimensions down to a handful before it reaches
+the model. That is a deliberate bias toward underfitting: a router that memorises
+its training set reports a quality-retention figure that is a lie.
+
+### Two axes, and the bug that proved the second one was real
+
+Tier is discrete; effort is continuous. Thinking tokens bill as output, so effort
+scales the output price rather than switching price lists — which means trimming
+effort on an expensive tier can beat moving to a cheap tier at full effort.
+
+The first implementation banded effort on `p_success`. A test caught that this
+makes the second axis **dead**: `p_success` is also what picks the tier, so
+everything reaching Opus has `p < 0.2` by construction and the band table handed
+out `"high"` every time. Effort now bands differently by rung — at the top, *how*
+hard (medium → high → xhigh); below it, by what margin the break-even was cleared.
+
+### Contamination is guarded before fitting, not reviewed after
+
+The router trains on eval outcomes, so training and scoring it on the same
+examples turns quality retention into memorisation. `assert_disjoint` runs inside
+`build()`, before any fitting. The subtler trap is that every label depends on a
+scoring threshold — "the cheap tier succeeded" means it scored 1.0 on its
+strictest metric — so `success_threshold` is an explicit recorded parameter.
+Lowering it makes the router look better and the product worse.
+
+Two failure modes are refused outright: training data with only one outcome class
+(a boundary cannot be learned from examples that all went the same way), and a
+trained router with AUC below 0.60 (`train_router.py` exits non-zero — a coin flip
+wearing a coefficient vector is worse than picking one tier, because it adds
+latency and a moving part to reach the same answer).
+
+An untrained or missing model routes **up**, to the top of the ladder. Falling
+back to the cheap tier would silently degrade quality the moment a file went
+missing.
+
 ### The semantic cache can be wrong, and everything follows from that
 
 A prefix-cache miss costs money. A semantic false hit returns someone else's
@@ -544,6 +632,7 @@ src/prism/
   tokens.py         local estimator + calibration against the counting endpoint
   caching/          both layers: breakpoint policy, scope keys, embeddings,
                     pgvector store, threshold calibration, three-config replay
+  routing/          break-even economics, features, classifier, two-axis policy
 migrations/         idempotent SQL, applied on first boot and by scripts/migrate.py
 datasets/golden/    the golden set, versioned next to the code
 datasets/cache_pairs.jsonl  labelled query pairs, mostly hard negatives
@@ -555,7 +644,7 @@ prompts/            prompt versions + manifest.json naming the active one
 
 | Method | Path | Notes |
 |---|---|---|
-| POST | `/v1/chat/completions` | OpenAI-compatible, streaming and non-streaming |
+| POST | `/v1/chat/completions` | OpenAI-compatible, streaming and non-streaming; model `prism-auto` hands tier selection to the router |
 | GET | `/v1/models` | the ladder, with capability flags |
 | GET | `/admin/traces` | tenant-scoped trace list |
 | GET | `/admin/traces/{id}` | full request/response inspection |
@@ -576,6 +665,6 @@ Every completion response carries `x-prism-model` (what actually ran),
 4. **Week 6** — CI regression gate ✅
 5. **Weeks 7–8** — prefix breakpoint policy and measurement, then the semantic
    layer with its labelled pair set and ROC curve ✅
-6. **Week 9** — the two-axis router
+6. **Week 9** — the two-axis router ✅
 7. **Weeks 10–11** — rate limiting, circuit breakers, failover, budgets
 8. **Week 12** — dashboard

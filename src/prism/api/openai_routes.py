@@ -19,6 +19,8 @@ from ..cost import compute_cost
 from ..logging_setup import get_logger
 from ..prompts import Registry
 from ..registry import MODELS, ModelSpec, UnknownModelError, resolve_model
+from ..routing import policy as routing_policy
+from ..routing.training import features_for_request
 from ..schemas.errors import ErrorKind, PrismError
 from ..schemas.openai import ChatCompletionRequest
 from ..tracing.recorder import TraceDraft, TraceRecorder
@@ -30,12 +32,17 @@ from .deps import (
     PrincipalDep,
     ProviderDep,
     RecorderDep,
+    RouterDep,
     SemanticCacheDep,
     SettingsDep,
 )
 
 router = APIRouter()
 log = get_logger(__name__)
+
+#: The model name that hands tier selection to the router. Any other name is
+#: served as asked, so routing is opt-in per request rather than global.
+ROUTED_MODEL = "prism-auto"
 
 
 @router.get("/models")
@@ -71,6 +78,7 @@ async def create_chat_completion(
     recorder: RecorderDep,
     settings: SettingsDep,
     semantic: SemanticCacheDep,
+    router: RouterDep,
 ) -> Response:
     started = time.perf_counter()
 
@@ -131,6 +139,39 @@ async def create_chat_completion(
         registry=Registry(settings.prompts_root),
         trust_tools=settings.cache_trust_tools,
     )
+    # The two-axis router. Only engaged for the "prism-auto" model name, so a
+    # client that pinned a tier keeps it. Runs on the translated body because
+    # that is what the features are defined over, and re-translates for the
+    # chosen tier rather than rewriting in place — Haiku accepts sampling
+    # parameters that Opus rejects, so a rewrite would carry the wrong ones.
+    if router is not None and body.model.strip().lower() == ROUTED_MODEL:
+        decision = router.decide(
+            features_for_request(
+                upstream_body,
+                embedder=getattr(semantic, "embedder", None),
+            )
+        )
+        draft.extra["routing"] = decision.as_json()
+        if decision.model != spec.id:
+            spec = MODELS[decision.model]
+            draft.model_resolved = spec.id
+            upstream_body, warnings = request_translator.translate(
+                body, spec, default_max_tokens=settings.default_max_tokens
+            )
+            upstream_body, placement, scopes = apply_to_request(
+                upstream_body,
+                CachePolicy.for_tier(
+                    spec.tier,
+                    enabled=settings.cache_enabled,
+                    ttl=settings.cache_ttl,
+                    cache_conversation_prefix=settings.cache_conversation_prefix,
+                ),
+                prompt_version=body.prism.prompt_version if body.prism else None,
+                registry=Registry(settings.prompts_root),
+                trust_tools=settings.cache_trust_tools,
+            )
+        upstream_body = routing_policy.apply_to_body(upstream_body, decision)
+
     draft.extra["prefix_cache"] = placement.as_json() | {"scopes": scopes.as_json()}
     draft.upstream_request = upstream_body
 

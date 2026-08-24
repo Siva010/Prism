@@ -19,10 +19,41 @@ from .config import Settings, get_settings
 from .db.engine import dispose_engine, get_sessionmaker, init_engine
 from .logging_setup import configure_logging, get_logger
 from .providers.anthropic_provider import AnthropicProvider
+from .routing.economics import EscalationMode
+from .routing.model import DifficultyRouter
+from .routing.policy import RouterPolicy
 from .schemas.errors import ErrorBody, ErrorKind, ErrorResponse, PrismError
 from .tracing.recorder import TraceRecorder
 
 log = get_logger(__name__)
+
+
+def _build_router(settings: Settings) -> RouterPolicy | None:
+    """Load the trained router, or None.
+
+    A missing or unloadable model file is logged and tolerated rather than fatal:
+    `RouterPolicy` with no router defaults to the top of the ladder, so the
+    failure mode is "spends more than it needed to" rather than "silently serves
+    worse answers".
+    """
+    if not settings.router_enabled:
+        return None
+    router = None
+    try:
+        router = DifficultyRouter.load(settings.router_model_path)
+    except Exception as exc:  # noqa: BLE001
+        log.warning(
+            "router_model_unavailable",
+            path=settings.router_model_path,
+            error=str(exc),
+            effect="routing every request to the top of the ladder",
+        )
+    return RouterPolicy(
+        router=router,
+        mode=EscalationMode(settings.router_mode),
+        verifier_fraction=settings.router_verifier_fraction,
+        quality_floor=settings.router_quality_floor,
+    )
 
 
 def _build_semantic_cache(settings: Settings) -> SemanticCache | None:
@@ -63,11 +94,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
     app.state.recorder = TraceRecorder(include_bodies=settings.trace_bodies)
     app.state.semantic_cache = _build_semantic_cache(settings)
+    app.state.router_policy = _build_router(settings)
     log.info(
         "prism_started",
         default_model=settings.default_model,
         prefix_cache=settings.cache_enabled,
         semantic_cache=settings.semantic_cache_enabled,
+        router=settings.router_enabled,
     )
     try:
         yield

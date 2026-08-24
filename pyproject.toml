@@ -23,6 +23,12 @@ dependencies = [
 embeddings = [
     "sentence-transformers>=3.0",
 ]
+# The router. scikit-learn is small next to torch, but the router is
+# optional in the same way the semantic cache is.
+routing = [
+    "scikit-learn>=1.5",
+    "joblib>=1.4",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
@@ -54,3 +60,10 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.11"
 strict = true
 mypy_path = "src"
+
+# scikit-learn, joblib and sentence-transformers ship no type stubs. They are
+# optional extras confined to the router and the embedder, and both wrap them
+# behind typed interfaces, so the untyped edge stops there.
+[[tool.mypy.overrides]]
+module = ["sklearn.*", "joblib.*", "sentence_transformers.*"]
+ignore_missing_imports = true
