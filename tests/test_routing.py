@@ -330,11 +330,12 @@ def test_routing_up_strips_params_the_target_tier_rejects():
 
 
 @pytest.fixture
-def routed_client(provider, recorder, settings, semantic):
+def routed_client(provider, recorder, settings, semantic, chain):
     """A client whose router always predicts an easy request."""
     from fastapi.testclient import TestClient
 
     from prism.api.deps import (
+        get_chain,
         get_provider,
         get_recorder,
         get_router_policy,
@@ -346,6 +347,7 @@ def routed_client(provider, recorder, settings, semantic):
     app.dependency_overrides[get_provider] = lambda: provider
     app.dependency_overrides[get_recorder] = lambda: recorder
     app.dependency_overrides[get_semantic_cache] = lambda: semantic
+    app.dependency_overrides[get_chain] = lambda: chain
     app.dependency_overrides[get_router_policy] = lambda: RouterPolicy(router=FixedRouter(0.95))
     with TestClient(app) as c:
         yield c

@@ -42,6 +42,16 @@ def get_router_policy(request: Request) -> Any:
     return getattr(request.app.state, "router_policy", None)
 
 
+def get_chain(request: Request) -> Any:
+    """The provider chain: breakers, failover, optional hedging."""
+    return getattr(request.app.state, "chain", None)
+
+
+def get_limiter(request: Request) -> Any:
+    """The three-dimensional rate limiter, or None when disabled."""
+    return getattr(request.app.state, "limiter", None)
+
+
 async def get_principal(
     authorization: Annotated[str | None, Header()] = None,
     settings: Annotated[Settings, Depends(get_settings)] = None,  # type: ignore[assignment]
@@ -75,3 +85,5 @@ ProviderDep = Annotated[Provider, Depends(get_provider)]
 RecorderDep = Annotated[TraceRecorder, Depends(get_recorder)]
 SemanticCacheDep = Annotated[Any, Depends(get_semantic_cache)]
 RouterDep = Annotated[Any, Depends(get_router_policy)]
+ChainDep = Annotated[Any, Depends(get_chain)]
+LimiterDep = Annotated[Any, Depends(get_limiter)]

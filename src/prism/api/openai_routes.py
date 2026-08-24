@@ -15,7 +15,9 @@ from ..caching.breakpoints import CachePolicy
 from ..caching.keys import CacheScope
 from ..caching.policy import apply_to_request
 from ..caching.semantic import CacheHit
-from ..cost import compute_cost
+from ..cost import TokenUsage, compute_cost
+from ..db.engine import session_scope
+from ..governance import budgets
 from ..logging_setup import get_logger
 from ..prompts import Registry
 from ..registry import MODELS, ModelSpec, UnknownModelError, resolve_model
@@ -23,12 +25,15 @@ from ..routing import policy as routing_policy
 from ..routing.training import features_for_request
 from ..schemas.errors import ErrorKind, PrismError
 from ..schemas.openai import ChatCompletionRequest
+from ..tokens import estimate_request
 from ..tracing.recorder import TraceDraft, TraceRecorder
 from ..translation import request as request_translator
 from ..translation import response as response_translator
 from ..translation.mapping import to_finish_reason
 from ..translation.stream import DONE, StreamAssembler, sse
 from .deps import (
+    ChainDep,
+    LimiterDep,
     PrincipalDep,
     ProviderDep,
     RecorderDep,
@@ -79,6 +84,8 @@ async def create_chat_completion(
     settings: SettingsDep,
     semantic: SemanticCacheDep,
     router: RouterDep,
+    chain: ChainDep,
+    limiter: LimiterDep,
 ) -> Response:
     started = time.perf_counter()
 
@@ -104,6 +111,31 @@ async def create_chat_completion(
         )
         recorder.record_background(draft)
         return error
+
+    # Spend is checked before dispatch and recorded after, so a tenant can
+    # overrun by at most the requests already in flight. Closing that window
+    # would mean holding a lock across an upstream call, trading a bounded
+    # overrun for an unbounded latency problem.
+    budget = budgets.UNLIMITED
+    if settings.budgets_enabled and principal.tenant_id is not None:
+        try:
+            async with session_scope() as session:
+                budget = await budgets.check(session, principal.tenant_id)
+        except Exception as exc:  # noqa: BLE001
+            # A budget lookup that fails must not fail the request: erring
+            # toward serving is the cheaper mistake.
+            log.warning("budget_check_failed", error=str(exc))
+    draft.extra["budget"] = budget.as_json()
+
+    if not budget.allowed:
+        raise fail(
+            PrismError(
+                ErrorKind.INVALID_REQUEST,
+                f"tenant budget exhausted: ${budget.spent_usd} spent against a "
+                f"${budget.hard_cap_usd} cap for this period",
+                status_code=402,
+            )
+        )
 
     try:
         spec = resolve_model(body.model)
@@ -171,6 +203,16 @@ async def create_chat_completion(
                 trust_tools=settings.cache_trust_tools,
             )
         upstream_body = routing_policy.apply_to_body(upstream_body, decision)
+
+    if budget.must_degrade and spec.tier != "haiku":
+        # Over the hard cap with degrade selected: keep the tenant working on
+        # the cheapest tier rather than returning a 402.
+        spec = MODELS["claude-haiku-4-5"]
+        draft.model_resolved = spec.id
+        draft.extra["budget_degraded"] = True
+        upstream_body, warnings = request_translator.translate(
+            body, spec, default_max_tokens=settings.default_max_tokens
+        )
 
     draft.extra["prefix_cache"] = placement.as_json() | {"scopes": scopes.as_json()}
     draft.upstream_request = upstream_body
@@ -243,9 +285,44 @@ async def create_chat_completion(
             },
         )
 
+    # Reserve before dispatch. The predicted cache read is subtracted from the
+    # input reservation because cache reads do not draw on the input-token
+    # limit — which is what makes the prefix cache a throughput multiplier and
+    # not only a cost saver.
+    reservation = None
+    if limiter is not None:
+        estimated_input = estimate_request(upstream_body)
+        reservation = await limiter.reserve(
+            estimated_input=estimated_input,
+            estimated_output=upstream_body.get("max_tokens", 0),
+            predicted_cache_read=placement.estimated_cacheable_tokens,
+        )
+        draft.extra["rate_limit"] = reservation.as_json()
+        if not reservation.granted:
+            raise fail(
+                PrismError(
+                    ErrorKind.UPSTREAM_RATE_LIMIT,
+                    f"gateway rate limit reached on {reservation.blocked_on}; "
+                    "throttled before the provider would have refused",
+                    status_code=429,
+                    retry_after=1.0,
+                )
+            )
+
     try:
-        upstream = await provider.create_message(upstream_body)
+        if chain is not None:
+            result = await chain.create_message(
+                upstream_body, expected_cost_usd=float(budget.spent_usd or 0) * 0
+            )
+            upstream = result.response
+            draft.extra["failover"] = result.as_json()
+        else:
+            upstream = await provider.create_message(upstream_body)
     except PrismError as exc:
+        if reservation is not None:
+            # Give the budget back: a request that never reached a model did not
+            # spend the tokens it reserved.
+            await limiter.reconcile(reservation, TokenUsage())
         raise fail(exc) from exc
 
     completion = response_translator.translate(upstream.payload, model_requested=body.model)
@@ -273,6 +350,22 @@ async def create_chat_completion(
             upstream.payload,
             cost_usd=float(cost.total_usd),
         )
+
+    if reservation is not None:
+        # Score the prediction rather than trusting it. A request expected to
+        # hit the cache that did not consumed input the bucket never accounted
+        # for, and stats.under_reservation_rate makes that visible before it
+        # becomes a 429.
+        await limiter.reconcile(reservation, usage)
+        limiter.observe(upstream.rate_limits)
+
+    if settings.budgets_enabled and principal.tenant_id is not None:
+        try:
+            async with session_scope() as session:
+                await budgets.record_spend(session, principal.tenant_id, cost.total_usd)
+        except Exception as exc:  # noqa: BLE001
+            # Traces remain the source of truth; reconcile() rebuilds from them.
+            log.warning("budget_record_failed", error=str(exc))
 
     recorder.record_background(draft)
 

@@ -94,6 +94,28 @@ class Settings(BaseSettings):
     # down, since it is paid on every request rather than only on failures.
     router_verifier_fraction: float = 0.0
 
+    # --- Resilience and governance (weeks 10-11) ---
+    # Token-aware limiting in three dimensions. Off by default because it needs
+    # Redis; when off, the provider's own 429s are the only backstop.
+    rate_limit_enabled: bool = False
+    # Reservation margin, taken from the estimator's upper error percentile
+    # rather than its mean: over-reserving wastes headroom, under-reserving
+    # trips a 429, and those are not equally bad.
+    rate_limit_safety_margin: float = 0.15
+
+    breaker_failure_threshold: int = 5
+    breaker_cooldown_seconds: float = 30.0
+
+    # Hedging pays for two completions and keeps one, so it is opt-in and capped
+    # by expected cost.
+    hedge_enabled: bool = False
+    hedge_delay_ms: int = 2000
+    hedge_max_cost_usd: float = 0.05
+
+    # Per-tenant spend caps, read from the tenant_budgets table. A tenant with
+    # no row is unlimited.
+    budgets_enabled: bool = True
+
     # Thinking text on persisted traces: persist | redact | drop. Summarized
     # thinking is useful for debugging a bad answer, and it is also the most
     # sensitive thing in the trace, so this is a deliberate switch rather than an

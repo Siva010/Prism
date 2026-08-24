@@ -8,7 +8,12 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from prism.api.deps import get_provider, get_recorder, get_semantic_cache
+from prism.api.deps import (
+    get_chain,
+    get_provider,
+    get_recorder,
+    get_semantic_cache,
+)
 from prism.config import Settings
 from prism.main import create_app
 from prism.providers.base import ProviderResponse, RateLimitSnapshot, StreamHandle
@@ -219,10 +224,36 @@ def semantic():
 
 
 @pytest.fixture
-def client(provider: FakeProvider, recorder: CapturingRecorder, settings: Settings, semantic):
+def chain(provider: FakeProvider):
+    """The dispatch path is the chain, not the provider.
+
+    Overriding only `get_provider` would leave the route dialling the real
+    Anthropic client that lifespan wrapped, so the chain has to be replaced too.
+    """
+    from prism.reliability.breaker import BreakerConfig
+    from prism.reliability.failover import ProviderChain
+
+    return ProviderChain(
+        [provider],
+        # A high threshold: these tests deliberately provoke upstream errors, and
+        # a breaker that opened mid-suite would make later tests fail for the
+        # wrong reason.
+        breaker_config=BreakerConfig(failure_threshold=1000),
+    )
+
+
+@pytest.fixture
+def client(
+    provider: FakeProvider,
+    recorder: CapturingRecorder,
+    settings: Settings,
+    semantic,
+    chain,
+):
     app = create_app(settings)
     app.dependency_overrides[get_provider] = lambda: provider
     app.dependency_overrides[get_recorder] = lambda: recorder
     app.dependency_overrides[get_semantic_cache] = lambda: semantic
+    app.dependency_overrides[get_chain] = lambda: chain
     with TestClient(app) as c:
         yield c

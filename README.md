@@ -4,10 +4,10 @@ A Claude-native LLM gateway: OpenAI-compatible ingress, Anthropic Messages API
 egress, layered caching, a two-axis adaptive router, and a CI-gated evaluation
 harness.
 
-**Status: week 9 of 12.** The proxy, protocol translation (streaming and not),
-cost model, trace persistence, evaluation harness, CI quality gate, both cache
-layers, and the two-axis router are in. Everything else is scaffolding with a
-date on it — see [Build order](#build-order).
+**Status: week 11 of 12.** Everything but the dashboard: proxy, protocol
+translation (streaming and not), cost model, trace persistence, evaluation
+harness, CI quality gate, both cache layers, the two-axis router, and the
+resilience and governance layer. See [Build order](#build-order).
 
 ---
 
@@ -102,7 +102,9 @@ python scripts/promote.py assistant v2
 | Three-configuration replay + threshold ROC sweep | done |
 | Exact-match Redis layer | week 10 (with the rate-limit buckets) |
 | Two-axis router (tier + reasoning budget) | done |
-| Rate limiting, circuit breakers, budgets | weeks 10–11 |
+| Three-dimensional token-aware rate limiting (Redis/Lua) | done |
+| Circuit breakers, failover, hedging | done |
+| Per-tenant budgets + cost attribution | done |
 | Dashboard | week 12 |
 
 ---
@@ -119,7 +121,8 @@ claims.
 | | state |
 |---|---|
 | Translation, streaming, cost model, eval harness, cache logic, router | unit-tested against fakes |
-| Migrations 0001–0003, pgvector round-trip, HNSW index, scope isolation in SQL | verified against real Postgres |
+| Migrations 0001–0004, pgvector round-trip, HNSW index, scope isolation in SQL, budgets, cost attribution | verified against real Postgres |
+| Rate-limit Lua, including atomicity under 20-way concurrency | verified against real Redis |
 | Semantic-cache calibration and the three-configuration replay | measured with the real `bge-small-en-v1.5` |
 | **Anthropic Messages API** | **never called.** No request in this repo has reached a real provider. |
 
@@ -446,6 +449,95 @@ tripping a 429 (week 10). A mean would hide which is happening. Until someone ru
 `calibrate()` against a real key, `EstimatorReport.calibrated` is False and
 nothing here claims otherwise.
 
+### The prefix cache is a throughput multiplier, not only a cost saver
+
+This is the coupling that only appears once both layers exist. Providers limit
+requests, *input* tokens, and *output* tokens independently — three dimensions,
+any of which is a 429 — and **cache reads do not count toward the input-token
+limit**. So the input budget is really two budgets, and a request expected to hit
+the prefix cache reserves almost nothing:
+
+```
+effective ITPM = limit / (1 - prefix_hit_rate)
+```
+
+At an 80% hit rate a 2M ITPM limit carries roughly **10M** input tokens per
+minute. Week 7's cache work turns out to have been throughput work too.
+
+Which creates the real difficulty: the reservation has to *predict* cache
+behaviour, and a wrong prediction over-commits the bucket. So every reservation is
+reconciled against the `usage` the provider actually reports, and
+`under_reservation_rate` — the share of requests that used more than they
+reserved — is measured rather than assumed. Those are the requests that can still
+trip a 429.
+
+The margin on a reservation comes from the estimator's *upper* error percentile
+rather than its mean, because the two directions are not equally bad:
+over-reserving wastes headroom, under-reserving trips a limit.
+
+Buckets live in Redis behind a Lua script, because reserving against three
+dimensions has to be atomic. A check-then-write from Python would let two
+concurrent requests both see room for the last thousand tokens — there is a test
+that races twenty requests at a budget of ten and asserts exactly ten win.
+
+Configured limits are only a starting guess. Every response carries the real ones
+in `anthropic-ratelimit-*` headers, and `observe()` adopts them, so the gateway
+throttles *before* tripping rather than reacting to a 429.
+
+### The 429/529 split finally does something
+
+Week 1 put quota exhaustion and provider overload in separate members of
+`ErrorKind`. Ten weeks later that distinction is what the breaker and the failover
+chain act on:
+
+| | opens a circuit? | fails over? | why |
+|---|---|---|---|
+| **429** quota | no | **no** | the quota belongs to the account, not the route — another provider carries the same exhausted budget |
+| **529** capacity | **yes** | **yes** | the provider is the problem, and another one probably is not |
+| timeout / connection | **yes** | **yes** | whatever is wrong, this route is not serving |
+| **400** malformed | no | **no** | malformed everywhere; retrying elsewhere spends a second quota to get the same error |
+
+Conflating the first two is the most common bug in hand-rolled client code, and
+it fails in the worst possible direction: a burst of 429s opens every circuit and
+the gateway stops serving traffic it could have served. There is a test that fires
+a thousand 429s at a breaker and asserts it stays closed.
+
+Closing a circuit needs several consecutive successes, not one — a single success
+on a recovering provider is easy to come by, and closing on it puts full load
+straight back onto something still fragile. And when every provider fails, the
+*real* upstream error is re-raised rather than replaced by a generic 503, so a 529
+still reaches the client as a 529 with its `retry-after` intact; the attempt trail
+rides along in the body.
+
+### Hedging is a cost decision wearing a latency costume
+
+Firing a duplicate at the p95 mark buys tail latency and pays in tokens: every
+hedge that loses is a completion billed and discarded. So it is off by default,
+capped by expected cost, and never applied to an expensive call. The rule worth
+saying out loud is that a hedged request must never double-reserve rate-limit
+budget — the second call draws on the same reservation, or the limiter is wrong by
+exactly the hedge rate.
+
+### Two budget caps, and degrade before you reject
+
+One cap forces a choice between surprising someone with a bill and cutting them
+off without warning. Two does not: the soft cap warns and keeps serving, the hard
+cap acts. At the hard cap the action is configurable, and **degrading to the
+cheapest tier usually beats a 402** — the tenant keeps working at a fraction of
+the cost and the operator stops absorbing spend.
+
+The running total is a *cache*, not the ledger. `traces` holds every priced token,
+so `reconcile()` rebuilds the figure from them; a process that dies between the
+upstream call and the update costs accuracy until the next reconcile rather than
+corrupting anything. Spend is checked before dispatch and recorded after, so a
+tenant can overrun by at most the requests already in flight — closing that window
+would mean holding a lock across an upstream call, trading a bounded overrun for
+an unbounded latency problem.
+
+Cost attribution is a view over `traces` rather than a second table, and it
+divides by **successful** tasks. A tier that fails 40% of the time and retries on
+an expensive one is not cheap, and only that denominator shows it.
+
 ### The router's threshold is derived, not tuned
 
 Most routers pick a difficulty cutoff by hand and defend it with a plot. There is
@@ -665,6 +757,8 @@ src/prism/
   caching/          both layers: breakpoint policy, scope keys, embeddings,
                     pgvector store, threshold calibration, three-config replay
   routing/          break-even economics, features, classifier, two-axis policy
+  reliability/      three-dimensional limiter, breakers, failover, hedging
+  governance/       per-tenant budgets; cost attribution is a SQL view
 migrations/         idempotent SQL, applied on first boot and by scripts/migrate.py
 datasets/golden/    the golden set, versioned next to the code
 datasets/cache_pairs.jsonl  labelled query pairs, mostly hard negatives
@@ -698,5 +792,5 @@ Every completion response carries `x-prism-model` (what actually ran),
 5. **Weeks 7–8** — prefix breakpoint policy and measurement, then the semantic
    layer with its labelled pair set and ROC curve ✅
 6. **Week 9** — the two-axis router ✅
-7. **Weeks 10–11** — rate limiting, circuit breakers, failover, budgets
+7. **Weeks 10–11** — rate limiting, circuit breakers, failover, budgets ✅
 8. **Week 12** — dashboard

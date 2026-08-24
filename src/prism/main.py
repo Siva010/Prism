@@ -19,6 +19,9 @@ from .config import Settings, get_settings
 from .db.engine import dispose_engine, get_sessionmaker, init_engine
 from .logging_setup import configure_logging, get_logger
 from .providers.anthropic_provider import AnthropicProvider
+from .reliability.breaker import BreakerConfig
+from .reliability.failover import HedgeConfig, ProviderChain
+from .reliability.ratelimit import RateLimiter
 from .routing.economics import EscalationMode
 from .routing.model import DifficultyRouter
 from .routing.policy import RouterPolicy
@@ -95,18 +98,46 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     app.state.recorder = TraceRecorder(include_bodies=settings.trace_bodies)
     app.state.semantic_cache = _build_semantic_cache(settings)
     app.state.router_policy = _build_router(settings)
+
+    # One chain, even with one provider: failover and breakers are untestable
+    # code paths otherwise, and retrofitting the abstraction later is how a
+    # gateway ends up with one provider's shape leaking everywhere.
+    app.state.chain = ProviderChain(
+        [app.state.provider],
+        breaker_config=BreakerConfig(
+            failure_threshold=settings.breaker_failure_threshold,
+            cooldown_seconds=settings.breaker_cooldown_seconds,
+        ),
+        hedge=HedgeConfig(
+            enabled=settings.hedge_enabled,
+            delay_ms=settings.hedge_delay_ms,
+            max_cost_usd=settings.hedge_max_cost_usd,
+        ),
+    )
+    app.state.redis = None
+    app.state.limiter = None
+    if settings.rate_limit_enabled:
+        import redis.asyncio as aioredis
+
+        app.state.redis = aioredis.from_url(settings.redis_url)
+        app.state.limiter = RateLimiter(
+            app.state.redis, safety_margin=settings.rate_limit_safety_margin
+        )
     log.info(
         "prism_started",
         default_model=settings.default_model,
         prefix_cache=settings.cache_enabled,
         semantic_cache=settings.semantic_cache_enabled,
         router=settings.router_enabled,
+        rate_limiting=settings.rate_limit_enabled,
     )
     try:
         yield
     finally:
         await app.state.recorder.drain()
         await app.state.provider.aclose()
+        if app.state.redis is not None:
+            await app.state.redis.aclose()
         await dispose_engine()
 
 
