@@ -1,0 +1,67 @@
+// Labelled query pairs for semantic-cache threshold calibration.
+//
+// "equivalent": true means an answer to query_a is a CORRECT AND COMPLETE answer
+// to query_b. That is a stronger claim than "these are similar" -- and the gap
+// between the two is exactly what the threshold has to learn. The hard negatives
+// below are near-identical strings with different correct answers; a threshold
+// tuned on hit rate alone will serve them and return a wrong answer to a user.
+//
+// Grow this toward ~200 pairs before trusting an operating point. At n=60 the
+// false-hit rate carries roughly +-5 points of uncertainty, which is wider than
+// the ceiling being enforced.
+//
+// --- equivalent: rephrasings ---------------------------------------------
+{"query_a": "What is the capital city of France?", "query_b": "Which city is the capital of France?", "equivalent": true, "notes": "word order only"}
+{"query_a": "How do I reverse a list in Python?", "query_b": "What is the way to reverse a Python list?", "equivalent": true}
+{"query_a": "Explain what a database index does", "query_b": "Can you explain the purpose of a database index?", "equivalent": true}
+{"query_a": "Write a haiku about the ocean", "query_b": "Compose a haiku on the subject of the ocean", "equivalent": true, "notes": "creative, but the request is the same"}
+{"query_a": "What causes rain to form in clouds?", "query_b": "How does rain form inside clouds?", "equivalent": true}
+{"query_a": "Summarise the main causes of the French Revolution", "query_b": "What were the main causes of the French Revolution?", "equivalent": true}
+{"query_a": "What is the difference between TCP and UDP?", "query_b": "How do TCP and UDP differ from each other?", "equivalent": true}
+{"query_a": "Give me a recipe for a simple tomato pasta sauce", "query_b": "How do I make a basic tomato sauce for pasta?", "equivalent": true}
+{"query_a": "Why is the sky blue during the day?", "query_b": "What makes the daytime sky appear blue?", "equivalent": true}
+{"query_a": "What does the acronym HTTP stand for?", "query_b": "HTTP is an acronym for what?", "equivalent": true}
+{"query_a": "How many bones are in the adult human body?", "query_b": "What is the number of bones in an adult human?", "equivalent": true}
+{"query_a": "Describe how photosynthesis works in plants", "query_b": "How does the process of photosynthesis work in plants?", "equivalent": true}
+{"query_a": "What is a good way to learn a new language quickly?", "query_b": "What is an effective method for learning a new language fast?", "equivalent": true}
+{"query_a": "Explain the concept of compound interest", "query_b": "What does compound interest mean?", "equivalent": true}
+{"query_a": "What are the health benefits of regular exercise?", "query_b": "How does exercising regularly benefit your health?", "equivalent": true}
+{"query_a": "How do vaccines protect against disease?", "query_b": "In what way do vaccines provide protection from disease?", "equivalent": true}
+{"query_a": "What is the tallest mountain in the world?", "query_b": "Which mountain is the highest on Earth?", "equivalent": true}
+{"query_a": "Explain the difference between weather and climate", "query_b": "How is climate different from weather?", "equivalent": true}
+{"query_a": "What year did the Second World War end?", "query_b": "In which year did WWII come to an end?", "equivalent": true}
+{"query_a": "How do I center a div in CSS?", "query_b": "What is the way to horizontally center a div using CSS?", "equivalent": true}
+//
+// --- NOT equivalent: hard negatives, the ones that matter ----------------
+{"query_a": "What is the capital city of France?", "query_b": "What is the capital city of Germany?", "equivalent": false, "notes": "one token apart, different correct answer"}
+{"query_a": "What is the capital city of France?", "query_b": "What is the largest city in France?", "equivalent": false, "notes": "Paris is both -- but the question is different and the answer would be wrong for other countries"}
+{"query_a": "How do I reverse a list in Python?", "query_b": "How do I reverse a string in Python?", "equivalent": false}
+{"query_a": "How do I reverse a list in Python?", "query_b": "How do I sort a list in Python?", "equivalent": false}
+{"query_a": "How do I reverse a list in Python?", "query_b": "How do I reverse a list in JavaScript?", "equivalent": false, "notes": "same task, different language"}
+{"query_a": "What is the difference between TCP and UDP?", "query_b": "What is the difference between TCP and IP?", "equivalent": false}
+{"query_a": "Convert 100 USD to EUR", "query_b": "Convert 100 EUR to USD", "equivalent": false, "notes": "direction reversed"}
+{"query_a": "Convert 100 USD to EUR", "query_b": "Convert 200 USD to EUR", "equivalent": false, "notes": "numbers differ; the string barely does"}
+{"query_a": "What year did the Second World War end?", "query_b": "What year did the Second World War begin?", "equivalent": false}
+{"query_a": "Summarise the main causes of the French Revolution", "query_b": "Summarise the main consequences of the French Revolution", "equivalent": false, "notes": "causes vs consequences"}
+{"query_a": "How many bones are in the adult human body?", "query_b": "How many bones are in the human hand?", "equivalent": false}
+{"query_a": "Write a haiku about the ocean", "query_b": "Write a sonnet about the ocean", "equivalent": false, "notes": "different form"}
+{"query_a": "Write a haiku about the ocean", "query_b": "Write a haiku about the mountains", "equivalent": false}
+{"query_a": "What are the health benefits of regular exercise?", "query_b": "What are the health risks of over-exercising?", "equivalent": false, "notes": "benefits vs risks"}
+{"query_a": "Explain the concept of compound interest", "query_b": "Explain the concept of simple interest", "equivalent": false}
+{"query_a": "What is the tallest mountain in the world?", "query_b": "What is the deepest ocean trench in the world?", "equivalent": false}
+{"query_a": "How do I center a div in CSS?", "query_b": "How do I center text in CSS?", "equivalent": false}
+{"query_a": "Give me a recipe for a simple tomato pasta sauce", "query_b": "Give me a recipe for a simple pesto pasta sauce", "equivalent": false}
+{"query_a": "Explain the difference between weather and climate", "query_b": "Explain the difference between climate and climate change", "equivalent": false}
+{"query_a": "Why is the sky blue during the day?", "query_b": "Why is the sky red at sunset?", "equivalent": false}
+{"query_a": "How do vaccines protect against disease?", "query_b": "How do antibiotics fight bacterial infection?", "equivalent": false}
+{"query_a": "What does the acronym HTTP stand for?", "query_b": "What does the acronym HTTPS stand for?", "equivalent": false, "notes": "one character apart"}
+{"query_a": "Describe how photosynthesis works in plants", "query_b": "Describe how cellular respiration works in plants", "equivalent": false}
+{"query_a": "What is a good way to learn a new language quickly?", "query_b": "What is a good way to learn a new instrument quickly?", "equivalent": false}
+{"query_a": "What causes rain to form in clouds?", "query_b": "What causes snow to form in clouds?", "equivalent": false}
+//
+// --- NOT equivalent: same topic, unrelated request -----------------------
+{"query_a": "Explain what a database index does", "query_b": "Write a SQL query that creates an index on the users table", "equivalent": false, "notes": "explain vs do"}
+{"query_a": "What is machine learning?", "query_b": "Write a Python script that trains a linear regression model", "equivalent": false}
+{"query_a": "Tell me about the history of coffee", "query_b": "How much caffeine is in a cup of coffee?", "equivalent": false}
+{"query_a": "Review this paragraph for grammar mistakes", "query_b": "Translate this paragraph into Spanish", "equivalent": false}
+{"query_a": "What is my current account balance?", "query_b": "What is the current interest rate on savings accounts?", "equivalent": false, "notes": "tenant-specific vs general -- scope keys catch this too"}

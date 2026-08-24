@@ -12,7 +12,9 @@ from fastapi import APIRouter, Response
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from ..caching.breakpoints import CachePolicy
+from ..caching.keys import CacheScope
 from ..caching.policy import apply_to_request
+from ..caching.semantic import CacheHit
 from ..cost import compute_cost
 from ..logging_setup import get_logger
 from ..prompts import Registry
@@ -24,7 +26,13 @@ from ..translation import request as request_translator
 from ..translation import response as response_translator
 from ..translation.mapping import to_finish_reason
 from ..translation.stream import DONE, StreamAssembler, sse
-from .deps import PrincipalDep, ProviderDep, RecorderDep, SettingsDep
+from .deps import (
+    PrincipalDep,
+    ProviderDep,
+    RecorderDep,
+    SemanticCacheDep,
+    SettingsDep,
+)
 
 router = APIRouter()
 log = get_logger(__name__)
@@ -62,6 +70,7 @@ async def create_chat_completion(
     provider: ProviderDep,
     recorder: RecorderDep,
     settings: SettingsDep,
+    semantic: SemanticCacheDep,
 ) -> Response:
     started = time.perf_counter()
 
@@ -125,6 +134,39 @@ async def create_chat_completion(
     draft.extra["prefix_cache"] = placement.as_json() | {"scopes": scopes.as_json()}
     draft.upstream_request = upstream_body
 
+    scope = CacheScope.from_request(
+        upstream_body,
+        tenant_id=str(principal.tenant_id or principal.tenant_slug),
+        prompt_version=draft.prompt_version,
+    )
+
+    # Layer 2. Only for non-streaming: replaying a cached completion as SSE is
+    # straightforward but changes what "time to first token" means, and that
+    # belongs with the dashboard work rather than smuggled in here.
+    if semantic is not None and not body.stream:
+        outcome = await semantic.lookup(upstream_body, scope)
+        draft.extra["semantic_cache"] = outcome.as_json() | {"scope": scope.as_json()}
+        if isinstance(outcome, CacheHit):
+            completion = response_translator.translate(outcome.response, model_requested=body.model)
+            draft.status = "ok"
+            draft.http_status = 200
+            draft.latency_ms = int((time.perf_counter() - started) * 1000)
+            draft.finish_reason = completion.choices[0].finish_reason
+            draft.response_body = completion.model_dump(mode="json", exclude_none=True)
+            # No upstream call, so no tokens and no cost. Recording zeros rather
+            # than the original request's usage is what makes the saving visible
+            # in the cost rollups instead of double-counting it.
+            recorder.record_background(draft)
+            return JSONResponse(
+                draft.response_body,
+                headers={
+                    "x-prism-model": spec.id,
+                    "x-prism-cache": "semantic-hit",
+                    "x-prism-cache-similarity": f"{outcome.similarity:.6f}",
+                    "x-prism-cost-usd": "0.00000000",
+                },
+            )
+
     if body.stream:
         frames = _stream_completion(
             body=body,
@@ -181,6 +223,16 @@ async def create_chat_completion(
     draft.response_body = completion.model_dump(mode="json", exclude_none=True)
     draft.extra["rate_limits"] = upstream.rate_limits.as_json()
 
+    if semantic is not None:
+        # Stored keyed on the request, holding the upstream payload: the same
+        # shape the non-cached path returns, so a hit needs no special handling.
+        draft.extra["semantic_cache_stored"] = await semantic.put(
+            upstream_body,
+            scope,
+            upstream.payload,
+            cost_usd=float(cost.total_usd),
+        )
+
     recorder.record_background(draft)
 
     payload = completion.model_dump(mode="json", exclude_none=True)
@@ -190,6 +242,7 @@ async def create_chat_completion(
             # The client keeps the model string it sent; these headers say what
             # actually happened, which is what makes a drop-in swap debuggable.
             "x-prism-model": spec.id,
+            "x-prism-cache": "miss",
             "x-prism-cost-usd": f"{cost.total_usd:.8f}",
             "x-prism-cache-read-tokens": str(usage.cache_read_input_tokens),
             "x-prism-cache-write-tokens": str(usage.cache_creation_input_tokens),

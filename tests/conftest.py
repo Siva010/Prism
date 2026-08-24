@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 from fastapi.testclient import TestClient
 
-from prism.api.deps import get_provider, get_recorder
+from prism.api.deps import get_provider, get_recorder, get_semantic_cache
 from prism.config import Settings
 from prism.main import create_app
 from prism.providers.base import ProviderResponse, RateLimitSnapshot, StreamHandle
@@ -199,9 +199,30 @@ def settings() -> Settings:
 
 
 @pytest.fixture
-def client(provider: FakeProvider, recorder: CapturingRecorder, settings: Settings):
+def semantic():
+    """Layer 2 backed by the in-memory store and the hashing stub.
+
+    The stub is not semantically meaningful, so these tests only exercise the
+    route's cache plumbing — retrieval quality is measured by the calibration
+    sweep against the real model, not here.
+    """
+    from prism.caching.embeddings import HashingEmbedder
+    from prism.caching.semantic import SemanticCache, SemanticCacheConfig
+    from prism.caching.store import InMemoryStore
+
+    return SemanticCache(
+        InMemoryStore(),
+        HashingEmbedder(),
+        SemanticCacheConfig(enabled=True, threshold=0.99, min_query_chars=16),
+        allow_unsafe_embedder=True,
+    )
+
+
+@pytest.fixture
+def client(provider: FakeProvider, recorder: CapturingRecorder, settings: Settings, semantic):
     app = create_app(settings)
     app.dependency_overrides[get_provider] = lambda: provider
     app.dependency_overrides[get_recorder] = lambda: recorder
+    app.dependency_overrides[get_semantic_cache] = lambda: semantic
     with TestClient(app) as c:
         yield c

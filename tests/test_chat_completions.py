@@ -219,3 +219,92 @@ def test_the_placement_report_lands_on_the_trace(client, recorder):
     )
     cache = recorder.last.extra["prefix_cache"]
     assert "breakpoints" in cache and "skipped" in cache and "scopes" in cache
+
+
+# --- semantic cache (week 8) ----------------------------------------------
+
+
+def ask(client, question: str, **extra):
+    payload = {
+        "model": "claude-opus-5",
+        "messages": [{"role": "user", "content": question}],
+    }
+    payload.update(extra)
+    return client.post("/v1/chat/completions", json=payload)
+
+
+QUESTION = "How do I reverse a list in Python, with a worked example?"
+
+
+def test_the_first_request_misses_and_is_stored(client, provider, recorder):
+    resp = ask(client, QUESTION)
+    assert resp.status_code == 200
+    assert resp.headers["x-prism-cache"] == "miss"
+    assert len(provider.calls) == 1
+    assert recorder.last.extra["semantic_cache"]["hit"] is False
+    assert recorder.last.extra["semantic_cache_stored"] is True
+
+
+def test_an_identical_repeat_is_served_from_cache_without_an_upstream_call(
+    client, provider, recorder
+):
+    ask(client, QUESTION)
+    assert len(provider.calls) == 1
+
+    second = ask(client, QUESTION)
+    assert second.status_code == 200
+    assert second.headers["x-prism-cache"] == "semantic-hit"
+    # The whole point: no upstream call, so no tokens and no cost.
+    assert len(provider.calls) == 1
+    assert second.headers["x-prism-cost-usd"] == "0.00000000"
+    assert second.json()["choices"][0]["message"]["content"] == "Paris."
+
+
+def test_a_cache_hit_records_zero_cost_rather_than_the_original_cost(client, recorder):
+    ask(client, QUESTION)
+    ask(client, QUESTION)
+    trace = recorder.last
+    # Recording the original request's usage again would double-count the spend
+    # and hide the saving in the rollups.
+    assert trace.usage.output_tokens == 0
+    assert trace.cost is None or trace.cost.total_usd == 0
+    assert trace.extra["semantic_cache"]["hit"] is True
+
+
+def test_the_similarity_of_a_hit_is_reported_to_the_client(client):
+    ask(client, QUESTION)
+    second = ask(client, QUESTION)
+    assert float(second.headers["x-prism-cache-similarity"]) >= 0.99
+
+
+def test_a_different_question_still_reaches_the_provider(client, provider):
+    ask(client, QUESTION)
+    ask(client, "What is the boiling point of water at sea level, in Celsius?")
+    assert len(provider.calls) == 2
+
+
+def test_a_miss_records_how_close_it_came_for_later_retuning(client, recorder):
+    ask(client, QUESTION)
+    ask(client, "What is the boiling point of water at sea level, in Celsius?")
+    cache = recorder.last.extra["semantic_cache"]
+    assert cache["hit"] is False
+    assert cache["best_similarity"] is not None
+    assert cache["nearest_query"] == QUESTION
+
+
+def test_the_scope_key_is_recorded_on_the_trace(client, recorder):
+    ask(client, QUESTION)
+    scope = recorder.last.extra["semantic_cache"]["scope"]
+    assert scope["model"] == "claude-opus-5"
+    assert scope["scope_key"]
+
+
+def test_streaming_requests_bypass_the_semantic_lookup(client, provider, recorder):
+    # Replaying a cached completion as SSE changes what time-to-first-token
+    # means, so it is deliberately not done here.
+    ask(client, QUESTION)
+    resp = ask(client, QUESTION, stream=True)
+    assert resp.status_code == 200
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    # The stream still went upstream despite an identical cached entry existing.
+    assert len(provider.calls) == 2

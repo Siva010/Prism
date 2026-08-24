@@ -12,14 +12,43 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from .api import admin_routes, openai_routes
+from .caching.embeddings import build_embedder
+from .caching.semantic import SemanticCache, SemanticCacheConfig
+from .caching.store import PgVectorStore
 from .config import Settings, get_settings
-from .db.engine import dispose_engine, init_engine
+from .db.engine import dispose_engine, get_sessionmaker, init_engine
 from .logging_setup import configure_logging, get_logger
 from .providers.anthropic_provider import AnthropicProvider
 from .schemas.errors import ErrorBody, ErrorKind, ErrorResponse, PrismError
 from .tracing.recorder import TraceRecorder
 
 log = get_logger(__name__)
+
+
+def _build_semantic_cache(settings: Settings) -> SemanticCache | None:
+    """Construct layer 2, or None when it is switched off.
+
+    The embedder is built even when the cache is disabled only if it is cheap to
+    do so; `LocalEmbedder` loads its weights lazily, so this costs nothing until
+    the first lookup.
+    """
+    if not settings.semantic_cache_enabled:
+        return None
+    embedder = (
+        build_embedder(settings.embedder, model_name=settings.embedder_model)
+        if settings.embedder == "local"
+        else build_embedder(settings.embedder)
+    )
+    store = PgVectorStore(get_sessionmaker(), ef_search=settings.hnsw_ef_search)
+    return SemanticCache(
+        store,
+        embedder,
+        SemanticCacheConfig(
+            enabled=True,
+            threshold=settings.semantic_cache_threshold,
+            min_query_chars=settings.semantic_cache_min_query_chars,
+        ),
+    )
 
 
 @asynccontextmanager
@@ -33,7 +62,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         connect_timeout_s=settings.connect_timeout_s,
     )
     app.state.recorder = TraceRecorder(include_bodies=settings.trace_bodies)
-    log.info("prism_started", default_model=settings.default_model)
+    app.state.semantic_cache = _build_semantic_cache(settings)
+    log.info(
+        "prism_started",
+        default_model=settings.default_model,
+        prefix_cache=settings.cache_enabled,
+        semantic_cache=settings.semantic_cache_enabled,
+    )
     try:
         yield
     finally:

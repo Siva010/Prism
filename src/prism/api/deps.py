@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Any
 
 from fastapi import Depends, Header, Request
 
@@ -30,6 +30,11 @@ def get_provider(request: Request) -> Provider:
 
 def get_recorder(request: Request) -> TraceRecorder:
     return request.app.state.recorder  # type: ignore[no-any-return]
+
+
+def get_semantic_cache(request: Request) -> Any:
+    """Layer 2, or None when disabled. Callers must handle None."""
+    return getattr(request.app.state, "semantic_cache", None)
 
 
 async def get_principal(
@@ -63,3 +68,4 @@ PrincipalDep = Annotated[Principal, Depends(get_principal)]
 SettingsDep = Annotated[Settings, Depends(get_settings)]
 ProviderDep = Annotated[Provider, Depends(get_provider)]
 RecorderDep = Annotated[TraceRecorder, Depends(get_recorder)]
+SemanticCacheDep = Annotated[Any, Depends(get_semantic_cache)]

@@ -18,6 +18,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# The local embedding model. Kept out of the base install because torch is
+# large and a gateway with the semantic cache disabled never loads it.
+embeddings = [
+    "sentence-transformers>=3.0",
+]
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",

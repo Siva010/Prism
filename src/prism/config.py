@@ -63,6 +63,22 @@ class Settings(BaseSettings):
     cache_trust_tools: bool = True
     prompts_root: str = "prompts"
 
+    # --- Layer 2: semantic cache (week 8) ---
+    # Off until a threshold has been calibrated against labelled pairs. This
+    # layer can return a WRONG answer, unlike layer 1, so it does not get a
+    # convenient default.
+    semantic_cache_enabled: bool = False
+    semantic_cache_threshold: float = 0.95
+    # "local" loads bge-small-en-v1.5 on CPU; "hashing" is a test stub that the
+    # cache refuses to serve traffic on.
+    embedder: Literal["local", "hashing"] = "local"
+    embedder_model: str = "BAAI/bge-small-en-v1.5"
+    # Short queries have few tokens to disambiguate them, so cosine similarity
+    # between two different short queries runs high. False hits cluster here.
+    semantic_cache_min_query_chars: int = 24
+    # HNSW recall/latency dial, set per session rather than baked into the index.
+    hnsw_ef_search: int = 40
+
     # Thinking text on persisted traces: persist | redact | drop. Summarized
     # thinking is useful for debugging a bad answer, and it is also the most
     # sensitive thing in the trace, so this is a deliberate switch rather than an

@@ -4,10 +4,10 @@ A Claude-native LLM gateway: OpenAI-compatible ingress, Anthropic Messages API
 egress, layered caching, a two-axis adaptive router, and a CI-gated evaluation
 harness.
 
-**Status: week 7 of 12.** The proxy, protocol translation (streaming and not),
-cost model, trace persistence, evaluation harness, CI quality gate, and the
-provider prefix-cache layer are in. Everything else is scaffolding with a date
-on it — see [Build order](#build-order).
+**Status: week 8 of 12.** The proxy, protocol translation (streaming and not),
+cost model, trace persistence, evaluation harness, CI quality gate, and both
+cache layers are in. Everything else is scaffolding with a date on it — see
+[Build order](#build-order).
 
 ---
 
@@ -92,12 +92,67 @@ python scripts/promote.py assistant v2
 | CI regression gate (required check) | done |
 | Prefix-cache breakpoint policy + placement report | done |
 | Local token estimator + calibration harness | done |
-| Semantic cache (pgvector/HNSW) + ROC calibration | week 8 |
+| Semantic cache (pgvector/HNSW), scoped and calibrated | done |
+| Three-configuration replay + threshold ROC sweep | done |
+| Exact-match Redis layer | week 10 (with the rate-limit buckets) |
 | Two-axis router | week 9 |
 | Rate limiting, circuit breakers, budgets | weeks 10–11 |
 | Dashboard | week 12 |
 
 ---
+
+---
+
+## The result
+
+The headline number this project exists to produce, measured on 2026-08-24 with
+`bge-small-en-v1.5` and a synthetic 100-request corpus:
+
+| configuration | cost | per request | saving |
+|---|---|---|---|
+| no cache | $2.5000 | $0.025000 | — |
+| prefix only | $1.1672 | $0.011672 | **53.3%**, at zero correctness risk |
+| prefix + semantic | $0.7992 | $0.007992 | **31.5% incremental**, 68.0% total |
+
+At threshold 0.91 the semantic layer served 32 of 100 requests. Labelling every
+one of those hits against the ground-truth pair set by hand:
+
+- 24 were byte-identical queries (trivially correct)
+- 8 were labelled-equivalent rephrasings (correct)
+- **0 were false hits**, 95% CI **0% – 10.7%**
+
+Reproduce it:
+
+```bash
+python scripts/calibrate_cache.py --pairs datasets/cache_pairs.jsonl --max-false-hit-rate 0.40
+```
+```bash
+python scripts/replay.py --from-pairs datasets/cache_pairs.jsonl --threshold 0.91 --audit-out hits.jsonl
+```
+
+### What these numbers are not
+
+Four caveats, none of which are optional when quoting the figures above.
+
+1. **The corpus is synthetic.** It is built from the labelled pair file, where
+   ~40% of pairs are equivalent by construction. Real traffic repeats itself far
+   less, so the 31.5% incremental saving is an upper bound on a favourable
+   distribution, not a production measurement.
+2. **The prefix cache state is simulated.** Provider cache contents are not
+   observable from outside, so replaying live three times would not isolate the
+   variable and would cost three times as much. The simulation runs real
+   breakpoint placement and the real cost model over a TTL window.
+3. **A 0% false-hit rate on 32 served responses is not proof of safety.** The
+   Wilson upper bound is 10.7%. That interval is the number to defend a threshold
+   with, not the point estimate.
+4. **At a 1% false-hit ceiling, no threshold qualifies at all.** With 50 labelled
+   pairs the interval is wider than the ceiling, so `calibrate_cache.py` exits 1
+   and says the cache should stay off. Getting to a defensible 1% needs ~200
+   pairs. That is the honest state of this layer today, and it is why
+   `semantic_cache_enabled` defaults to **false**.
+
+The AUC is **0.910**, which is the encouraging part: the classes separate well,
+so the limit here is labelled-set size rather than the embedding model.
 
 ## Design notes
 
@@ -359,6 +414,52 @@ tripping a 429 (week 10). A mean would hide which is happening. Until someone ru
 `calibrate()` against a real key, `EstimatorReport.calibrated` is False and
 nothing here claims otherwise.
 
+### The semantic cache can be wrong, and everything follows from that
+
+A prefix-cache miss costs money. A semantic false hit returns someone else's
+answer to a real user. Those are not comparable failures, so:
+
+**The threshold is an operating point on an ROC curve, not a tuned constant.**
+`calibrate_cache.py` sweeps thresholds against hand-labelled pairs and picks the
+best recall subject to a false-hit *ceiling* — applied to the **upper bound** of
+the Wilson interval, not the point estimate. On a small labelled set the point
+estimate is often 0.0, and treating that as proof of safety is how a cache ships
+with an unmeasured error rate. When nothing qualifies, the tool says so and exits
+non-zero; "this cache should stay off" is a real answer.
+
+**The labelled set is mostly hard negatives.** "What is the capital of France?"
+against "…of Germany?" — one token apart, different correct answer. `HTTP` against
+`HTTPS`. "Convert 100 USD to EUR" against "…EUR to USD". Without pairs like these
+the curve is easy, the chosen threshold is worthless, and the cache looks safe
+right up until it isn't.
+
+**Scope is a partition, not a filter.** Tenant, model, temperature, system-prompt
+hash and tool-schema hash fold into one key, and a nearest-neighbour search never
+crosses it. Filtering after retrieval would mean the leak exists in the query path
+and is prevented only by a later `if`. The tenant case has its own test, and it is
+the one property no threshold can provide: two tenants asking the identical
+question have similarity 1.0.
+
+**The cache refuses to run on a stub embedder.** `HashingEmbedder` reports
+`is_production_grade = False` and the constructor raises unless a test explicitly
+opts in. Its measured AUC is 0.24 — worse than chance, because character trigrams
+make near-identical strings with *different* meanings the closest pairs. A cache
+running on it would serve confident nonsense.
+
+**Misses record how close they came.** Production traffic then becomes the data
+for re-tuning the operating point, instead of needing a fresh labelling exercise
+every time the prompt or model changes.
+
+### Why the embedding model runs locally
+
+Calling a paid embedding API to decide whether you can avoid a paid completion API
+defeats the exercise. At ~$0.02/M for a hosted embedding against $5/M for Opus
+input, the hosted option eats a visible slice of the saving it exists to produce,
+and adds a network round trip to the hot path of *every* request, hit or miss.
+`bge-small-en-v1.5` is ~33M parameters on CPU, so the saving is bounded by
+electricity. It is an optional extra (`pip install -e ".[embeddings]"`) because
+torch is large and a deployment with layer 2 off should never load it.
+
 ### The eval harness came before the cache and the router
 
 Both need it as ground truth. The cache's operating point is a precision/recall
@@ -441,9 +542,11 @@ src/prism/
   eval/             golden dataset, metrics, judge, calibration, bootstrap stats
   prompts.py        versioned prompt registry; cache-key and gate input
   tokens.py         local estimator + calibration against the counting endpoint
-  caching/          breakpoint placement policy and the scope decision behind it
+  caching/          both layers: breakpoint policy, scope keys, embeddings,
+                    pgvector store, threshold calibration, three-config replay
 migrations/         idempotent SQL, applied on first boot and by scripts/migrate.py
 datasets/golden/    the golden set, versioned next to the code
+datasets/cache_pairs.jsonl  labelled query pairs, mostly hard negatives
 prompts/            prompt versions + manifest.json naming the active one
 .github/workflows/  ci.yml (free, always) and eval-gate.yml (costs money)
 ```
@@ -471,8 +574,8 @@ Every completion response carries `x-prism-model` (what actually ran),
 3. **Weeks 4–5** — eval harness *before* the cache and the router, because both
    need it as ground truth ✅
 4. **Week 6** — CI regression gate ✅
-5. **Weeks 7–8** — prefix breakpoint policy and measurement ✅, then the
-   semantic layer with its labelled pair set and ROC curve
+5. **Weeks 7–8** — prefix breakpoint policy and measurement, then the semantic
+   layer with its labelled pair set and ROC curve ✅
 6. **Week 9** — the two-axis router
 7. **Weeks 10–11** — rate limiting, circuit breakers, failover, budgets
 8. **Week 12** — dashboard
