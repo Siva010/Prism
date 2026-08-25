@@ -108,7 +108,7 @@ python scripts/promote.py assistant v2
 | CI regression gate (required check) | done |
 | Prefix-cache breakpoint policy + placement report | done |
 | Local token estimator + calibration harness | done |
-| Semantic cache (pgvector/HNSW), scoped and calibrated | done |
+| Semantic cache (pgvector/HNSW), scoped and calibrated | done — **ships disabled**, see [The result](#the-result) |
 | Three-configuration replay + threshold ROC sweep | done |
 | Exact-match Redis layer | week 10 (with the rate-limit buckets) |
 | Two-axis router (tier + reasoning budget) | done |
@@ -152,54 +152,83 @@ fix is to go to asyncpg's own `execute()`, which uses the simple query protocol.
 
 ## The result
 
-The headline number this project exists to produce, measured on 2026-08-24 with
-`bge-small-en-v1.5` and a synthetic 100-request corpus:
+**The semantic cache does not pay for itself, and it ships disabled.** That is
+the finding, it is negative, and it is the most useful thing in this repository.
 
-| configuration | cost | per request | saving |
-|---|---|---|---|
-| no cache | $2.5000 | $0.025000 | — |
-| prefix only | $1.1672 | $0.011672 | **53.3%**, at zero correctness risk |
-| prefix + semantic | $0.7992 | $0.007992 | **31.5% incremental**, 68.0% total |
+Measured on 2026-08-25 with `bge-small-en-v1.5` against 213 hand-labelled query
+pairs and a 426-request replay corpus:
 
-At threshold 0.91 the semantic layer served 32 of 100 requests. Labelling every
-one of those hits against the ground-truth pair set by hand:
+| layer | saving | correctness cost |
+|---|---|---|
+| **Prefix cache** vs no caching | **53.8%** | none — exact-prefix, cannot return a wrong answer |
+| **Semantic** on top, threshold 0.90 | +33.9% | **19.2% false-hit rate** (95% CI up to 29.7%) |
+| **Semantic** on top, threshold 0.97 | +8.7% | too few served to bound at all |
 
-- 24 were byte-identical queries (trivially correct)
-- 8 were labelled-equivalent rephrasings (correct)
-- **0 were false hits**, 95% CI **0% – 10.7%**
+A 19% false-hit rate means roughly **one in five cached answers is a response to
+a different question**. No threshold on this corpus clears even a 30% false-hit
+ceiling while serving anything, let alone the 1% a user-facing cache would need.
+So `semantic_cache_enabled` defaults to `false`, and the honest recommendation is
+to run layer 1 alone.
 
-Reproduce it:
+The AUC is **0.9008**, which is the interesting part: the classes *do* separate.
+The failure is not that the embedding model is bad, it is that the errors land
+exactly where they hurt. "What is the capital city of France?" and "…of Germany?"
+are one token apart and score ~0.95 — above any threshold that serves a useful
+number of real rephrasings. Precision peaks at 0.87 and never recovers.
+
+### This corrects an earlier claim in this README
+
+An earlier version of this section reported **31.5% incremental saving at a 0%
+false-hit rate**. That number was real but measured against a 50-pair labelled
+set that under-represented hard negatives. Expanding to 213 pairs — deliberately
+loading them with one-token-apart negatives, polarity flips, reversed unit
+conversions, and explain-versus-do pairs — reversed the conclusion.
+
+That is the whole argument for calibrating against a labelled set instead of
+eyeballing a hit rate: **the first measurement was flattering because the test
+set was easy, and only a harder test set revealed it.** A hit-rate number alone
+would never have surfaced this.
+
+### How large would the labelled set need to be?
+
+Bounded by the rule of three, not by taste. With zero observed false hits in *n*
+served responses, the 95% upper bound is about 3/*n* — so the tightest ceiling
+you can *defend* is capped by how many responses the threshold serves, however
+good the threshold is:
+
+| served | 20 | 50 | 100 | 200 | 300 | 500 | 1000 |
+|---|---|---|---|---|---|---|---|
+| **upper bound** | 16.1% | 7.1% | 3.7% | 1.9% | 1.3% | 0.8% | 0.4% |
+
+At the ~25% hit rate these thresholds produce, a defensible **1% ceiling needs
+roughly 1200 labelled pairs** — not the ~200 an earlier draft of this README
+claimed. That estimate was wrong by about 6x.
+
+Reproduce all of it:
 
 ```bash
-python scripts/calibrate_cache.py --pairs datasets/cache_pairs.jsonl --max-false-hit-rate 0.40
+python scripts/calibrate_cache.py --pairs datasets/cache_pairs.jsonl --max-false-hit-rate 0.05
 ```
 ```bash
-python scripts/replay.py --from-pairs datasets/cache_pairs.jsonl --threshold 0.91 --audit-out hits.jsonl
+python scripts/replay.py --from-pairs datasets/cache_pairs.jsonl --threshold 0.90 --embedder local
 ```
 
 ### What these numbers are not
 
-Four caveats, none of which are optional when quoting the figures above.
-
-1. **The corpus is synthetic.** It is built from the labelled pair file, where
-   ~40% of pairs are equivalent by construction. Real traffic repeats itself far
-   less, so the 31.5% incremental saving is an upper bound on a favourable
-   distribution, not a production measurement.
+1. **The corpus is synthetic**, built from the labelled pair file where 38% of
+   pairs are equivalent by construction. Real traffic repeats itself far less, so
+   both the savings *and* the hit rate are upper bounds on a favourable
+   distribution.
 2. **The prefix cache state is simulated.** Provider cache contents are not
    observable from outside, so replaying live three times would not isolate the
-   variable and would cost three times as much. The simulation runs real
-   breakpoint placement and the real cost model over a TTL window.
-3. **A 0% false-hit rate on 32 served responses is not proof of safety.** The
-   Wilson upper bound is 10.7%. That interval is the number to defend a threshold
-   with, not the point estimate.
-4. **At a 1% false-hit ceiling, no threshold qualifies at all.** With 50 labelled
-   pairs the interval is wider than the ceiling, so `calibrate_cache.py` exits 1
-   and says the cache should stay off. Getting to a defensible 1% needs ~200
-   pairs. That is the honest state of this layer today, and it is why
-   `semantic_cache_enabled` defaults to **false**.
-
-The AUC is **0.910**, which is the encouraging part: the classes separate well,
-so the limit here is labelled-set size rather than the embedding model.
+   variable and would cost three times as much. The simulation runs the real
+   breakpoint placement and the real five-class cost model over a TTL window.
+3. **The labels are editorial judgements**, made while building this project.
+   They are a reasonable proxy for calibrating the mechanism. They are not
+   crowd-sourced annotations and not a sample of any real workload.
+4. **The 53.8% prefix saving is the one number here with no correctness
+   asterisk** — that layer is exact-prefix and enforced by the provider. It is
+   also the number that survives contact with the harder test set unchanged.
 
 ## Design notes
 
@@ -712,6 +741,12 @@ running on it would serve confident nonsense.
 **Misses record how close they came.** Production traffic then becomes the data
 for re-tuning the operating point, instead of needing a fresh labelling exercise
 every time the prompt or model changes.
+
+All of which paid off in the least convenient way: on a labelled set built to
+this standard, **no threshold qualifies**, and the layer ships off. See
+[The result](#the-result). The paragraph above about an easy curve making a
+worthless threshold was written before the set was expanded — and then it
+happened.
 
 ### Why the embedding model runs locally
 

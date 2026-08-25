@@ -2,19 +2,32 @@
 //
 // "equivalent": true means an answer to query_a is a CORRECT AND COMPLETE answer
 // to query_b. That is a stronger claim than "these are similar" -- and the gap
-// between the two is exactly what the threshold has to learn. The hard negatives
-// below are near-identical strings with different correct answers; a threshold
-// tuned on hit rate alone will serve them and return a wrong answer to a user.
+// between the two is what the threshold has to learn. Roughly half the negatives
+// below are deliberately near-identical strings with different correct answers;
+// a threshold tuned on hit rate alone serves those and returns a wrong answer.
 //
-// Grow this toward ~200 pairs before trusting an operating point. At n=60 the
-// false-hit rate carries roughly +-5 points of uncertainty, which is wider than
-// the ceiling being enforced.
+// PROVENANCE: these labels are editorial judgements made while building this
+// project, not crowd-sourced annotations, and not a sample of production
+// traffic. They are a reasonable proxy for calibrating the mechanism. They are
+// not evidence about any real workload's repeat-query distribution.
 //
-// --- equivalent: rephrasings ---------------------------------------------
+// HOW BIG DOES THIS NEED TO BE? Bounded by the rule of three, not by taste. With
+// zero observed false hits in n served responses the 95% upper bound is about
+// 3/n, so the tightest ceiling you can DEFEND is capped by how many responses
+// the threshold serves -- no matter how good the threshold is:
+//
+//     served    20     50    100    200    300    500   1000
+//     bound  16.1%  7.1%   3.7%   1.9%   1.3%   0.8%   0.4%
+//
+// At the ~25% hit rate these thresholds produce, a 1% ceiling therefore needs
+// roughly 1200 labelled pairs. This file has ~200, which supports a ~4% ceiling.
+// That is the honest state of this layer.
+
+// ============================ EQUIVALENT ==================================
+// --- word order and phrasing ---
 {"query_a": "What is the capital city of France?", "query_b": "Which city is the capital of France?", "equivalent": true, "notes": "word order only"}
 {"query_a": "How do I reverse a list in Python?", "query_b": "What is the way to reverse a Python list?", "equivalent": true}
 {"query_a": "Explain what a database index does", "query_b": "Can you explain the purpose of a database index?", "equivalent": true}
-{"query_a": "Write a haiku about the ocean", "query_b": "Compose a haiku on the subject of the ocean", "equivalent": true, "notes": "creative, but the request is the same"}
 {"query_a": "What causes rain to form in clouds?", "query_b": "How does rain form inside clouds?", "equivalent": true}
 {"query_a": "Summarise the main causes of the French Revolution", "query_b": "What were the main causes of the French Revolution?", "equivalent": true}
 {"query_a": "What is the difference between TCP and UDP?", "query_b": "How do TCP and UDP differ from each other?", "equivalent": true}
@@ -31,37 +44,211 @@
 {"query_a": "Explain the difference between weather and climate", "query_b": "How is climate different from weather?", "equivalent": true}
 {"query_a": "What year did the Second World War end?", "query_b": "In which year did WWII come to an end?", "equivalent": true}
 {"query_a": "How do I center a div in CSS?", "query_b": "What is the way to horizontally center a div using CSS?", "equivalent": true}
-//
-// --- NOT equivalent: hard negatives, the ones that matter ----------------
-{"query_a": "What is the capital city of France?", "query_b": "What is the capital city of Germany?", "equivalent": false, "notes": "one token apart, different correct answer"}
-{"query_a": "What is the capital city of France?", "query_b": "What is the largest city in France?", "equivalent": false, "notes": "Paris is both -- but the question is different and the answer would be wrong for other countries"}
+{"query_a": "What is the boiling point of water at sea level?", "query_b": "At sea level, what temperature does water boil at?", "equivalent": true}
+// --- politeness and framing wrappers ---
+{"query_a": "Explain recursion", "query_b": "Could you please explain recursion to me?", "equivalent": true, "notes": "politeness wrapper only"}
+{"query_a": "List the planets in the solar system", "query_b": "Can you list the planets of the solar system for me?", "equivalent": true}
+{"query_a": "What is Big O notation?", "query_b": "I'd like to understand what Big O notation is.", "equivalent": true}
+{"query_a": "How does DNS resolution work?", "query_b": "Walk me through how DNS resolution works.", "equivalent": true}
+{"query_a": "Define machine learning", "query_b": "What is the definition of machine learning?", "equivalent": true}
+{"query_a": "What is a REST API?", "query_b": "Hi! Quick question - what exactly is a REST API?", "equivalent": true}
+{"query_a": "Explain garbage collection in Java", "query_b": "I'm new to Java. Can you explain garbage collection?", "equivalent": true}
+{"query_a": "How do I install Docker on Ubuntu?", "query_b": "What are the steps to install Docker on Ubuntu?", "equivalent": true}
+{"query_a": "What is the speed of light in a vacuum?", "query_b": "How fast does light travel in a vacuum?", "equivalent": true}
+{"query_a": "Explain what an API rate limit is", "query_b": "What does it mean for an API to have a rate limit?", "equivalent": true}
+// --- synonym substitution ---
+{"query_a": "How do I fix a leaking tap?", "query_b": "How do I repair a dripping faucet?", "equivalent": true, "notes": "en-GB / en-US and synonyms"}
+{"query_a": "What is the best way to store leftover rice?", "query_b": "What is the best method for storing leftover rice?", "equivalent": true}
+{"query_a": "How can I reduce my monthly electricity bill?", "query_b": "How can I lower my monthly power bill?", "equivalent": true}
+{"query_a": "What are the symptoms of dehydration?", "query_b": "What are the signs of dehydration?", "equivalent": true}
+{"query_a": "How do I begin learning to play guitar?", "query_b": "How do I start learning guitar?", "equivalent": true}
+{"query_a": "Explain the purpose of a load balancer", "query_b": "What is a load balancer for?", "equivalent": true}
+{"query_a": "What is the function of the mitochondria?", "query_b": "What do mitochondria do?", "equivalent": true}
+{"query_a": "How do I make my website load faster?", "query_b": "How can I speed up my website's loading time?", "equivalent": true}
+{"query_a": "What causes inflation in an economy?", "query_b": "What makes inflation happen in an economy?", "equivalent": true}
+{"query_a": "How do I write a good cover letter?", "query_b": "What makes a strong cover letter?", "equivalent": true}
+// --- question vs imperative form ---
+{"query_a": "What are the main features of Rust?", "query_b": "Describe the main features of Rust.", "equivalent": true}
+{"query_a": "How does a hash table work?", "query_b": "Explain how a hash table works.", "equivalent": true}
+{"query_a": "What is the water cycle?", "query_b": "Describe the water cycle.", "equivalent": true}
+{"query_a": "What are the advantages of remote work?", "query_b": "List the advantages of working remotely.", "equivalent": true}
+{"query_a": "How do solar panels generate electricity?", "query_b": "Explain how solar panels produce electricity.", "equivalent": true}
+{"query_a": "What is the role of a product manager?", "query_b": "Describe what a product manager does.", "equivalent": true}
+{"query_a": "How does encryption keep data safe?", "query_b": "Explain how encryption protects data.", "equivalent": true}
+{"query_a": "What is continuous integration?", "query_b": "Explain continuous integration.", "equivalent": true}
+{"query_a": "How do I improve my sleep quality?", "query_b": "Give me advice on improving sleep quality.", "equivalent": true}
+{"query_a": "What is the greenhouse effect?", "query_b": "Explain the greenhouse effect.", "equivalent": true}
+// --- filler, typos, and incidental noise ---
+{"query_a": "What is the capital of Japan?", "query_b": "whats the capital of japan", "equivalent": true, "notes": "casing and punctuation"}
+{"query_a": "How do I sort a dictionary by value in Python?", "query_b": "how do i sort a dict by value in python?", "equivalent": true}
+{"query_a": "What is the difference between let and const in JavaScript?", "query_b": "difference between let and const in js?", "equivalent": true}
+{"query_a": "Explain what a foreign key is in SQL", "query_b": "explain foriegn keys in SQL", "equivalent": true, "notes": "typo"}
+{"query_a": "How long should I boil an egg for a soft yolk?", "query_b": "How long do I boil an egg if I want a soft yolk?", "equivalent": true}
+{"query_a": "What does the git rebase command do?", "query_b": "What does git rebase actually do?", "equivalent": true}
+{"query_a": "How do I create a virtual environment in Python?", "query_b": "How do you make a Python virtual environment?", "equivalent": true}
+{"query_a": "What is the largest ocean on Earth?", "query_b": "Which is Earth's largest ocean?", "equivalent": true}
+{"query_a": "Who painted the Mona Lisa?", "query_b": "The Mona Lisa was painted by whom?", "equivalent": true}
+{"query_a": "What is the chemical formula for water?", "query_b": "Water's chemical formula is what?", "equivalent": true}
+// --- same task, different specificity that does not change the answer ---
+{"query_a": "How do I check the Python version installed on my machine?", "query_b": "What command shows my installed Python version?", "equivalent": true}
+{"query_a": "What is the freezing point of water in Celsius?", "query_b": "In Celsius, at what temperature does water freeze?", "equivalent": true}
+{"query_a": "How many continents are there on Earth?", "query_b": "What is the total number of continents?", "equivalent": true}
+{"query_a": "What is the currency used in Japan?", "query_b": "Which currency does Japan use?", "equivalent": true}
+{"query_a": "How do I undo the last git commit?", "query_b": "What is the command to undo my most recent git commit?", "equivalent": true}
+{"query_a": "What is the capital of Australia?", "query_b": "Australia's capital city is what?", "equivalent": true}
+{"query_a": "Explain what a deadlock is in concurrent programming", "query_b": "In concurrent programming, what is a deadlock?", "equivalent": true}
+{"query_a": "What does CPU stand for?", "query_b": "CPU is short for what?", "equivalent": true}
+{"query_a": "How do I list all files in a directory on Linux?", "query_b": "What Linux command lists every file in a directory?", "equivalent": true}
+{"query_a": "What is the purpose of a unit test?", "query_b": "Why do we write unit tests?", "equivalent": true}
+{"query_a": "How does a binary search work?", "query_b": "Explain the way binary search operates.", "equivalent": true}
+{"query_a": "What is the population of Canada roughly?", "query_b": "Approximately how many people live in Canada?", "equivalent": true}
+{"query_a": "How do I convert a string to an integer in Python?", "query_b": "In Python, how do you turn a string into an int?", "equivalent": true}
+{"query_a": "What is a pull request?", "query_b": "Explain what a pull request is.", "equivalent": true}
+{"query_a": "How do I make cold brew coffee at home?", "query_b": "What's the method for making cold brew coffee at home?", "equivalent": true}
+{"query_a": "What is the difference between RAM and storage?", "query_b": "How is RAM different from storage?", "equivalent": true}
+{"query_a": "Explain what an environment variable is", "query_b": "What is an environment variable?", "equivalent": true}
+{"query_a": "How do I stop a running Docker container?", "query_b": "What command stops a Docker container that is running?", "equivalent": true}
+{"query_a": "What does the term 'idempotent' mean in APIs?", "query_b": "In the context of APIs, what does idempotent mean?", "equivalent": true}
+{"query_a": "How do I add a new remote to a git repository?", "query_b": "What is the command to add a git remote?", "equivalent": true}
+
+// ======================== NOT EQUIVALENT ==================================
+// --- one token apart, different correct answer (the hard cases) ---
+{"query_a": "What is the capital city of France?", "query_b": "What is the capital city of Germany?", "equivalent": false, "notes": "one token apart"}
+{"query_a": "What is the capital city of France?", "query_b": "What is the capital city of Austria?", "equivalent": false}
+{"query_a": "What is the capital of Australia?", "query_b": "What is the capital of Austria?", "equivalent": false, "notes": "two characters apart"}
+{"query_a": "What is the capital of Japan?", "query_b": "What is the capital of China?", "equivalent": false}
+{"query_a": "What is the capital city of France?", "query_b": "What is the largest city in France?", "equivalent": false, "notes": "same answer here, different question -- generalises wrongly"}
 {"query_a": "How do I reverse a list in Python?", "query_b": "How do I reverse a string in Python?", "equivalent": false}
 {"query_a": "How do I reverse a list in Python?", "query_b": "How do I sort a list in Python?", "equivalent": false}
 {"query_a": "How do I reverse a list in Python?", "query_b": "How do I reverse a list in JavaScript?", "equivalent": false, "notes": "same task, different language"}
+{"query_a": "How do I reverse a list in Python?", "query_b": "How do I shuffle a list in Python?", "equivalent": false}
 {"query_a": "What is the difference between TCP and UDP?", "query_b": "What is the difference between TCP and IP?", "equivalent": false}
+{"query_a": "What is the difference between RAM and storage?", "query_b": "What is the difference between RAM and ROM?", "equivalent": false}
+{"query_a": "What is the difference between let and const in JavaScript?", "query_b": "What is the difference between let and var in JavaScript?", "equivalent": false}
 {"query_a": "Convert 100 USD to EUR", "query_b": "Convert 100 EUR to USD", "equivalent": false, "notes": "direction reversed"}
-{"query_a": "Convert 100 USD to EUR", "query_b": "Convert 200 USD to EUR", "equivalent": false, "notes": "numbers differ; the string barely does"}
+{"query_a": "Convert 100 USD to EUR", "query_b": "Convert 200 USD to EUR", "equivalent": false, "notes": "numbers differ, string barely does"}
+{"query_a": "Convert 100 USD to EUR", "query_b": "Convert 100 USD to GBP", "equivalent": false}
 {"query_a": "What year did the Second World War end?", "query_b": "What year did the Second World War begin?", "equivalent": false}
+{"query_a": "What year did the Second World War end?", "query_b": "What year did the First World War end?", "equivalent": false}
 {"query_a": "Summarise the main causes of the French Revolution", "query_b": "Summarise the main consequences of the French Revolution", "equivalent": false, "notes": "causes vs consequences"}
 {"query_a": "How many bones are in the adult human body?", "query_b": "How many bones are in the human hand?", "equivalent": false}
+{"query_a": "How many bones are in the adult human body?", "query_b": "How many muscles are in the adult human body?", "equivalent": false}
+{"query_a": "How many continents are there on Earth?", "query_b": "How many oceans are there on Earth?", "equivalent": false}
 {"query_a": "Write a haiku about the ocean", "query_b": "Write a sonnet about the ocean", "equivalent": false, "notes": "different form"}
 {"query_a": "Write a haiku about the ocean", "query_b": "Write a haiku about the mountains", "equivalent": false}
 {"query_a": "What are the health benefits of regular exercise?", "query_b": "What are the health risks of over-exercising?", "equivalent": false, "notes": "benefits vs risks"}
 {"query_a": "Explain the concept of compound interest", "query_b": "Explain the concept of simple interest", "equivalent": false}
 {"query_a": "What is the tallest mountain in the world?", "query_b": "What is the deepest ocean trench in the world?", "equivalent": false}
+{"query_a": "What is the tallest mountain in the world?", "query_b": "What is the tallest building in the world?", "equivalent": false}
+{"query_a": "What is the largest ocean on Earth?", "query_b": "What is the smallest ocean on Earth?", "equivalent": false}
 {"query_a": "How do I center a div in CSS?", "query_b": "How do I center text in CSS?", "equivalent": false}
 {"query_a": "Give me a recipe for a simple tomato pasta sauce", "query_b": "Give me a recipe for a simple pesto pasta sauce", "equivalent": false}
 {"query_a": "Explain the difference between weather and climate", "query_b": "Explain the difference between climate and climate change", "equivalent": false}
 {"query_a": "Why is the sky blue during the day?", "query_b": "Why is the sky red at sunset?", "equivalent": false}
 {"query_a": "How do vaccines protect against disease?", "query_b": "How do antibiotics fight bacterial infection?", "equivalent": false}
 {"query_a": "What does the acronym HTTP stand for?", "query_b": "What does the acronym HTTPS stand for?", "equivalent": false, "notes": "one character apart"}
+{"query_a": "What does CPU stand for?", "query_b": "What does GPU stand for?", "equivalent": false}
 {"query_a": "Describe how photosynthesis works in plants", "query_b": "Describe how cellular respiration works in plants", "equivalent": false}
 {"query_a": "What is a good way to learn a new language quickly?", "query_b": "What is a good way to learn a new instrument quickly?", "equivalent": false}
 {"query_a": "What causes rain to form in clouds?", "query_b": "What causes snow to form in clouds?", "equivalent": false}
-//
-// --- NOT equivalent: same topic, unrelated request -----------------------
+{"query_a": "What is the boiling point of water at sea level?", "query_b": "What is the freezing point of water at sea level?", "equivalent": false}
+{"query_a": "What is the boiling point of water at sea level?", "query_b": "What is the boiling point of water at 3000m altitude?", "equivalent": false, "notes": "condition changes the answer"}
+{"query_a": "What is the freezing point of water in Celsius?", "query_b": "What is the freezing point of water in Fahrenheit?", "equivalent": false, "notes": "unit changes the answer"}
+{"query_a": "What is the speed of light in a vacuum?", "query_b": "What is the speed of sound in air?", "equivalent": false}
+{"query_a": "What is the currency used in Japan?", "query_b": "What is the currency used in South Korea?", "equivalent": false}
+{"query_a": "Who painted the Mona Lisa?", "query_b": "Who painted The Starry Night?", "equivalent": false}
+{"query_a": "What is the chemical formula for water?", "query_b": "What is the chemical formula for hydrogen peroxide?", "equivalent": false, "notes": "adjacent chemistry, different answer"}
+{"query_a": "What is the population of Canada roughly?", "query_b": "What is the population of Australia roughly?", "equivalent": false}
+{"query_a": "How long should I boil an egg for a soft yolk?", "query_b": "How long should I boil an egg for a hard yolk?", "equivalent": false}
+{"query_a": "How do I undo the last git commit?", "query_b": "How do I undo the last git push?", "equivalent": false}
+{"query_a": "How do I stop a running Docker container?", "query_b": "How do I delete a Docker container?", "equivalent": false}
+{"query_a": "How do I add a new remote to a git repository?", "query_b": "How do I remove a remote from a git repository?", "equivalent": false}
+{"query_a": "How do I install Docker on Ubuntu?", "query_b": "How do I uninstall Docker on Ubuntu?", "equivalent": false}
+{"query_a": "How do I install Docker on Ubuntu?", "query_b": "How do I install Docker on macOS?", "equivalent": false}
+{"query_a": "How do I convert a string to an integer in Python?", "query_b": "How do I convert an integer to a string in Python?", "equivalent": false, "notes": "direction reversed"}
+{"query_a": "How do I sort a dictionary by value in Python?", "query_b": "How do I sort a dictionary by key in Python?", "equivalent": false}
+{"query_a": "How do I check the Python version installed on my machine?", "query_b": "How do I upgrade the Python version on my machine?", "equivalent": false}
+{"query_a": "How do I create a virtual environment in Python?", "query_b": "How do I delete a virtual environment in Python?", "equivalent": false}
+{"query_a": "How do I list all files in a directory on Linux?", "query_b": "How do I list all processes on Linux?", "equivalent": false}
+{"query_a": "How do I make my website load faster?", "query_b": "How do I make my database queries faster?", "equivalent": false}
+{"query_a": "What is the role of a product manager?", "query_b": "What is the role of a project manager?", "equivalent": false, "notes": "commonly confused, genuinely different"}
+{"query_a": "How can I reduce my monthly electricity bill?", "query_b": "How can I reduce my monthly water bill?", "equivalent": false}
+{"query_a": "What are the symptoms of dehydration?", "query_b": "What are the symptoms of heat stroke?", "equivalent": false}
+{"query_a": "How do I begin learning to play guitar?", "query_b": "How do I begin learning to play piano?", "equivalent": false}
+{"query_a": "What is the function of the mitochondria?", "query_b": "What is the function of the ribosome?", "equivalent": false}
+{"query_a": "What causes inflation in an economy?", "query_b": "What causes deflation in an economy?", "equivalent": false}
+{"query_a": "How do I write a good cover letter?", "query_b": "How do I write a good resume?", "equivalent": false}
+{"query_a": "What are the advantages of remote work?", "query_b": "What are the disadvantages of remote work?", "equivalent": false}
+{"query_a": "How do solar panels generate electricity?", "query_b": "How do wind turbines generate electricity?", "equivalent": false}
+{"query_a": "How does encryption keep data safe?", "query_b": "How does hashing keep passwords safe?", "equivalent": false, "notes": "adjacent, frequently conflated"}
+{"query_a": "What is continuous integration?", "query_b": "What is continuous deployment?", "equivalent": false}
+{"query_a": "How do I improve my sleep quality?", "query_b": "How do I improve my focus during the day?", "equivalent": false}
+{"query_a": "What is the greenhouse effect?", "query_b": "What is the ozone hole?", "equivalent": false}
+{"query_a": "What is Big O notation?", "query_b": "What is Big Theta notation?", "equivalent": false}
+{"query_a": "How does DNS resolution work?", "query_b": "How does DHCP work?", "equivalent": false}
+{"query_a": "How does a hash table work?", "query_b": "How does a binary search tree work?", "equivalent": false}
+{"query_a": "How does a binary search work?", "query_b": "How does a linear search work?", "equivalent": false}
+{"query_a": "What is a REST API?", "query_b": "What is a GraphQL API?", "equivalent": false}
+{"query_a": "What is a pull request?", "query_b": "What is a merge conflict?", "equivalent": false}
+{"query_a": "Explain garbage collection in Java", "query_b": "Explain garbage collection in Python", "equivalent": false, "notes": "different mechanism"}
+{"query_a": "Explain what a foreign key is in SQL", "query_b": "Explain what a primary key is in SQL", "equivalent": false}
+{"query_a": "Explain what a deadlock is in concurrent programming", "query_b": "Explain what a race condition is in concurrent programming", "equivalent": false}
+{"query_a": "Explain what an environment variable is", "query_b": "Explain what a shell alias is", "equivalent": false}
+{"query_a": "What does the term 'idempotent' mean in APIs?", "query_b": "What does the term 'stateless' mean in APIs?", "equivalent": false}
+{"query_a": "What does the git rebase command do?", "query_b": "What does the git merge command do?", "equivalent": false, "notes": "the classic confusion"}
+{"query_a": "Explain the purpose of a load balancer", "query_b": "Explain the purpose of a reverse proxy", "equivalent": false, "notes": "overlapping, not the same"}
+{"query_a": "What is the purpose of a unit test?", "query_b": "What is the purpose of an integration test?", "equivalent": false}
+{"query_a": "Explain what an API rate limit is", "query_b": "Explain what an API quota is", "equivalent": false, "notes": "the 429/529 distinction in miniature"}
+{"query_a": "What is the water cycle?", "query_b": "What is the carbon cycle?", "equivalent": false}
+{"query_a": "What are the main features of Rust?", "query_b": "What are the main features of Go?", "equivalent": false}
+{"query_a": "How do I make cold brew coffee at home?", "query_b": "How do I make espresso at home?", "equivalent": false}
+{"query_a": "What is the best way to store leftover rice?", "query_b": "What is the best way to reheat leftover rice?", "equivalent": false}
+{"query_a": "How do I fix a leaking tap?", "query_b": "How do I fix a blocked drain?", "equivalent": false}
+{"query_a": "Define machine learning", "query_b": "Define deep learning", "equivalent": false}
+{"query_a": "Explain recursion", "query_b": "Explain iteration", "equivalent": false}
+{"query_a": "List the planets in the solar system", "query_b": "List the moons of Jupiter", "equivalent": false}
+// --- explain vs do: same topic, incompatible deliverable ---
 {"query_a": "Explain what a database index does", "query_b": "Write a SQL query that creates an index on the users table", "equivalent": false, "notes": "explain vs do"}
 {"query_a": "What is machine learning?", "query_b": "Write a Python script that trains a linear regression model", "equivalent": false}
+{"query_a": "Explain what a Dockerfile is", "query_b": "Write a Dockerfile for a Python FastAPI app", "equivalent": false}
+{"query_a": "What is a regular expression?", "query_b": "Write a regular expression that matches an email address", "equivalent": false}
+{"query_a": "Explain how binary search works", "query_b": "Implement binary search in Python", "equivalent": false}
+{"query_a": "What is unit testing?", "query_b": "Write unit tests for this function", "equivalent": false}
+{"query_a": "Explain what JSON Schema is", "query_b": "Write a JSON Schema for a user object with name and email", "equivalent": false}
+{"query_a": "What is a git hook?", "query_b": "Write a pre-commit git hook that runs the linter", "equivalent": false}
+// --- same topic, unrelated request ---
 {"query_a": "Tell me about the history of coffee", "query_b": "How much caffeine is in a cup of coffee?", "equivalent": false}
 {"query_a": "Review this paragraph for grammar mistakes", "query_b": "Translate this paragraph into Spanish", "equivalent": false}
-{"query_a": "What is my current account balance?", "query_b": "What is the current interest rate on savings accounts?", "equivalent": false, "notes": "tenant-specific vs general -- scope keys catch this too"}
+{"query_a": "Summarise this article", "query_b": "Translate this article into French", "equivalent": false}
+{"query_a": "What are the rules of chess?", "query_b": "What is the best opening move in chess?", "equivalent": false}
+{"query_a": "Explain the offside rule in football", "query_b": "Who won the last football World Cup?", "equivalent": false}
+{"query_a": "What is the history of the Python language?", "query_b": "What is new in the latest Python release?", "equivalent": false}
+{"query_a": "Describe the plot of Hamlet", "query_b": "Who wrote Hamlet?", "equivalent": false}
+{"query_a": "What is a mortgage?", "query_b": "Should I take a fixed or variable rate mortgage?", "equivalent": false, "notes": "definition vs advice"}
+// --- tenant-specific vs general (scope keys catch these too, belt and braces) ---
+{"query_a": "What is my current account balance?", "query_b": "What is the current interest rate on savings accounts?", "equivalent": false}
+{"query_a": "What is our internal audit log retention period?", "query_b": "What is a typical audit log retention period?", "equivalent": false, "notes": "ours vs typical"}
+{"query_a": "How many seats are on our current plan?", "query_b": "How many seats come with the Enterprise plan?", "equivalent": false}
+{"query_a": "When does my subscription renew?", "query_b": "When do subscriptions usually renew?", "equivalent": false}
+{"query_a": "Summarise last quarter's revenue for my team", "query_b": "Summarise last quarter's revenue for the company", "equivalent": false}
+{"query_a": "What did I spend on the API last month?", "query_b": "What does the API cost per million tokens?", "equivalent": false}
+// --- negation and polarity ---
+{"query_a": "Is it safe to leave a laptop charging overnight?", "query_b": "Is it unsafe to leave a laptop charging overnight?", "equivalent": false, "notes": "polarity flip; answers are not interchangeable text"}
+{"query_a": "Should I use tabs for indentation?", "query_b": "Should I avoid tabs for indentation?", "equivalent": false}
+{"query_a": "What foods are safe for dogs?", "query_b": "What foods are toxic to dogs?", "equivalent": false, "notes": "serving the wrong one here is actively harmful"}
+{"query_a": "Which HTTP methods are idempotent?", "query_b": "Which HTTP methods are not idempotent?", "equivalent": false}
+{"query_a": "When should I use a NoSQL database?", "query_b": "When should I avoid a NoSQL database?", "equivalent": false}
+// --- quantity and scale ---
+{"query_a": "Give me three ideas for a team offsite", "query_b": "Give me twenty ideas for a team offsite", "equivalent": false, "notes": "count changes the deliverable"}
+{"query_a": "Summarise this in one sentence", "query_b": "Summarise this in five paragraphs", "equivalent": false}
+{"query_a": "Explain quantum computing to a five-year-old", "query_b": "Explain quantum computing to a physics graduate", "equivalent": false, "notes": "audience changes the answer entirely"}
+{"query_a": "Write a one-line description of this project", "query_b": "Write a detailed README for this project", "equivalent": false}
+{"query_a": "What is 17 times 23?", "query_b": "What is 17 plus 23?", "equivalent": false}
+{"query_a": "What is 17 times 23?", "query_b": "What is 18 times 23?", "equivalent": false, "notes": "one digit apart"}
+{"query_a": "Convert 5 kilometres to miles", "query_b": "Convert 5 miles to kilometres", "equivalent": false}
+{"query_a": "Convert 32 degrees Fahrenheit to Celsius", "query_b": "Convert 32 degrees Celsius to Fahrenheit", "equivalent": false}
+// --- temporal ---
+{"query_a": "What are the current best practices for password storage?", "query_b": "What were the best practices for password storage in 2005?", "equivalent": false}
+{"query_a": "What is the latest version of Node.js?", "query_b": "What was the first version of Node.js?", "equivalent": false}
+{"query_a": "What is today's date?", "query_b": "What was yesterday's date?", "equivalent": false, "notes": "never cacheable at all"}
+{"query_a": "How is the stock market doing today?", "query_b": "How did the stock market do last year?", "equivalent": false}
