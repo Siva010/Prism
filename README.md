@@ -4,10 +4,14 @@ A Claude-native LLM gateway: OpenAI-compatible ingress, Anthropic Messages API
 egress, layered caching, a two-axis adaptive router, and a CI-gated evaluation
 harness.
 
-**Status: week 11 of 12.** Everything but the dashboard: proxy, protocol
-translation (streaming and not), cost model, trace persistence, evaluation
-harness, CI quality gate, both cache layers, the two-axis router, and the
-resilience and governance layer. See [Build order](#build-order).
+**Status: complete, 12 of 12 weeks.** Proxy, protocol translation (streaming
+and not), five-class cost model, trace persistence, evaluation harness, CI
+quality gate, both cache layers, the two-axis router, resilience and
+governance, and the dashboard.
+
+One limit stated up front, because it changes how every number below should be
+read: **no request in this repository has ever reached the real Anthropic API.**
+See [Verified against what](#verified-against-what).
 
 ---
 
@@ -58,6 +62,12 @@ cover the things whose failure mode only appears against a real server, which is
 a category this project learned about the hard way (see [Verified
 against](#verified-against-what)).
 
+Run the dashboard (reads the admin API; needs a tenant key):
+
+```bash
+cd dashboard && npm install && npm run dev
+```
+
 Run the eval suite against a running gateway:
 
 ```bash
@@ -105,6 +115,7 @@ python scripts/promote.py assistant v2
 | Three-dimensional token-aware rate limiting (Redis/Lua) | done |
 | Circuit breakers, failover, hedging | done |
 | Per-tenant budgets + cost attribution | done |
+| Next.js dashboard: traces, caching, evaluation, prompts, routing | done |
 | Dashboard | week 12 |
 
 ---
@@ -123,6 +134,7 @@ claims.
 | Translation, streaming, cost model, eval harness, cache logic, router | unit-tested against fakes |
 | Migrations 0001–0004, pgvector round-trip, HNSW index, scope isolation in SQL, budgets, cost attribution | verified against real Postgres |
 | Rate-limit Lua, including atomicity under 20-way concurrency | verified against real Redis |
+| Dashboard rendering, every view plus the gateway-unreachable path | verified in a browser against a stub serving the admin API contract |
 | Semantic-cache calibration and the three-configuration replay | measured with the real `bge-small-en-v1.5` |
 | **Anthropic Messages API** | **never called.** No request in this repo has reached a real provider. |
 
@@ -449,6 +461,45 @@ tripping a 429 (week 10). A mean would hide which is happening. Until someone ru
 `calibrate()` against a real key, `EstimatorReport.calibrated` is False and
 nothing here claims otherwise.
 
+### The dashboard refuses to show a number it does not have
+
+Every view is server-rendered against the admin API with a tenant-scoped key, so
+tenant isolation is enforced once — in the gateway — rather than twice with a
+chance of the two disagreeing. The dashboard holds no database credentials.
+
+The design decision worth naming is what happens when a section fails to load.
+It renders an explicit *"nothing is being shown for this section — not zero, not
+stale"*, never a zero. A dashboard showing $0.00 spend and a healthy circuit
+breaker because the gateway is unreachable is worse than no dashboard, and the
+whole argument of this project is that an unmeasured number must never look like
+a measured one. Empty tables distinguish "no data yet" from "could not load" for
+the same reason.
+
+What each view is for:
+
+* **Overview** — spend, prefix hit rate, write/read ratio, and the throughput
+  table showing effective ITPM against hit rate. Provider health surfaces
+  `429s ignored` deliberately: it counts the quota errors correctly *not* treated
+  as provider ill-health.
+* **Traces** — every request with its five token classes, plus gateway overhead,
+  which is not clamped at zero. Trace detail shows the full translation chain:
+  client request, the translated upstream body with its `cache_control` markers,
+  the upstream response, and the response translated back.
+* **Caching** — both layers side by side, the write/read ratio flagged red above
+  1, and the full threshold-versus-false-hit curve with the chosen operating
+  point highlighted and its Wilson upper bound beside it.
+* **Evaluation** — every metric as an interval. A +2.3% delta whose interval
+  spans zero renders as "no change", which is the project's thesis made visible.
+  A judge run with no human labels is labelled **uncalibrated** rather than
+  quietly reported as a win rate.
+* **Prompts & routing** — version hashes with the predicted prefix-cache
+  invalidation of a promotion, the derived break-even table, and the router's
+  coefficients.
+
+Next 16, incidentally, because the pinned 15.1.6 carried a published CVE and the
+only clean fix was the major. Shipping a portfolio project on a known-vulnerable
+dependency is not a trade worth making. `npm audit` is clean.
+
 ### The prefix cache is a throughput multiplier, not only a cost saver
 
 This is the coupling that only appears once both layers exist. Providers limit
@@ -759,6 +810,7 @@ src/prism/
   routing/          break-even economics, features, classifier, two-axis policy
   reliability/      three-dimensional limiter, breakers, failover, hedging
   governance/       per-tenant budgets; cost attribution is a SQL view
+dashboard/          Next.js reader of the admin API; holds no credentials
 migrations/         idempotent SQL, applied on first boot and by scripts/migrate.py
 datasets/golden/    the golden set, versioned next to the code
 datasets/cache_pairs.jsonl  labelled query pairs, mostly hard negatives
@@ -793,4 +845,4 @@ Every completion response carries `x-prism-model` (what actually ran),
    layer with its labelled pair set and ROC curve ✅
 6. **Week 9** — the two-axis router ✅
 7. **Weeks 10–11** — rate limiting, circuit breakers, failover, budgets ✅
-8. **Week 12** — dashboard
+8. **Week 12** — dashboard ✅
