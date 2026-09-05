@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import random
+from decimal import Decimal
 
 import pytest
 
@@ -265,16 +266,52 @@ def test_effort_varies_within_the_top_tier():
 
 
 def test_effort_below_the_top_tier_reflects_the_margin():
-    # Sonnet supports effort. A request that only just cleared its break-even
-    # gets more thinking than one that sailed past it.
+    """Sonnet supports effort: barely clearing its break-even buys more thinking.
+
+    The probabilities are derived from the live threshold rather than written in.
+    An earlier version hardcoded 0.42 against a threshold of 0.400 -- and then
+    Sonnet's introductory pricing expired, the threshold moved to 0.600, and the
+    test started failing on a calendar boundary rather than on a code change.
+    Deriving it is also the point being tested: the threshold is the cost ratio,
+    so it moves when the price list does.
+    """
     ladder = ["claude-sonnet-5", "claude-opus-5"]
-    comfortable = RouterPolicy(router=FixedRouter(0.95), ladder=list(ladder)).decide(
+    threshold = for_tiers("claude-sonnet-5", "claude-opus-5").threshold
+
+    comfortable = RouterPolicy(
+        router=FixedRouter(min(0.99, threshold + 0.35)), ladder=list(ladder)
+    ).decide(extract(body()))
+    marginal = RouterPolicy(router=FixedRouter(threshold + 0.02), ladder=list(ladder)).decide(
         extract(body())
     )
-    marginal = RouterPolicy(router=FixedRouter(0.42), ladder=list(ladder)).decide(extract(body()))
+
     assert comfortable.model == marginal.model == "claude-sonnet-5"
     assert comfortable.effort == "low"
     assert marginal.effort == "high"
+
+
+def test_the_threshold_tracks_the_price_list_including_promotions():
+    """A derived threshold moves when pricing does; a tuned constant would not.
+
+    Sonnet ran an introductory rate until 2026-08-31. Inside that window the
+    Sonnet-to-Opus break-even was 0.400; outside it, 0.600. Any request with a
+    predicted success between the two is routed differently depending only on
+    the date -- which is correct, and is exactly what a hardcoded constant would
+    have got silently wrong.
+    """
+    from datetime import date
+
+    from prism.registry import MODELS
+
+    sonnet = MODELS["claude-sonnet-5"]
+    inside = sonnet.rates(date(2026, 8, 15))
+    outside = sonnet.rates(date(2026, 9, 15))
+    assert inside == (Decimal("2.00"), Decimal("10.00"))
+    assert outside == (Decimal("3.00"), Decimal("15.00"))
+
+    opus_input = MODELS["claude-opus-5"].rates()[0]
+    assert float(inside[0] / opus_input) == pytest.approx(0.4, abs=0.01)
+    assert float(outside[0] / opus_input) == pytest.approx(0.6, abs=0.01)
 
 
 def test_effort_is_omitted_on_tiers_that_do_not_support_it():

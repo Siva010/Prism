@@ -83,7 +83,7 @@ jobs:
             uv run python scripts/eval.py \
               --candidate assistant \
               --model "$model" \
-              --dataset datasets/golden/v1.jsonl \
+              --dataset datasets/golden/v2.jsonl \
               --split test \
               --no-judge \
               --json > "nightly-$model.json"

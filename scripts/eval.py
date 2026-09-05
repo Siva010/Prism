@@ -1,6 +1,6 @@
 """Run the evaluation suite.
 
-    python scripts/eval.py --dataset datasets/golden/v1.jsonl --candidate v2 --baseline v1
+    python scripts/eval.py --dataset datasets/golden/v2.jsonl --candidate v2 --baseline v1
 
 Exits non-zero when a regression is detected, which is the whole interface the
 week-6 CI gate needs. Everything else — where results are stored, how the judge
@@ -65,7 +65,7 @@ def _ci_run_url() -> str | None:
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description="Run the Prism evaluation suite.")
-    p.add_argument("--dataset", default="datasets/golden/v1.jsonl")
+    p.add_argument("--dataset", default="datasets/golden/v2.jsonl")
     p.add_argument("--split", default="test")
     p.add_argument("--candidate", default="candidate")
     p.add_argument("--baseline", default=None)

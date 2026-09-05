@@ -134,7 +134,7 @@ jobs:
         run: |
           uv run python scripts/eval.py \
             --auto \
-            --dataset datasets/golden/v1.jsonl \
+            --dataset datasets/golden/v2.jsonl \
             --split test \
             --tolerance "${{ github.event.inputs.tolerance || '0.0' }}" \
             --human-labels datasets/golden/human_labels.jsonl

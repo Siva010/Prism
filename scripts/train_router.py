@@ -65,7 +65,7 @@ def demo_rows(n: int, seed: int) -> list[TrainingRow]:
 def main(argv: list[str]) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--outcomes")
-    parser.add_argument("--dataset", default="datasets/golden/v1.jsonl")
+    parser.add_argument("--dataset", default="datasets/golden/v2.jsonl")
     parser.add_argument("--demo", action="store_true")
     parser.add_argument("--demo-size", type=int, default=400)
     parser.add_argument("--out", default="data/router.joblib")

@@ -49,7 +49,7 @@ jobs:
           uv run python -c "
           from prism.eval.dataset import load
           import json
-          d = load('datasets/golden/v1.jsonl')
+          d = load('datasets/golden/v2.jsonl')
           print(json.dumps(d.summary(), indent=2))
           "
 

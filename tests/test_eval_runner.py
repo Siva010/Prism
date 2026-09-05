@@ -13,7 +13,7 @@ from prism.eval.dataset import Dataset, DatasetError, Example, assert_disjoint, 
 from prism.eval.judge import PairwiseJudge
 from prism.eval.runner import Arm, Response, run
 
-GOLDEN = Path(__file__).resolve().parents[1] / "datasets" / "golden" / "v1.jsonl"
+GOLDEN = Path(__file__).resolve().parents[1] / "datasets" / "golden" / "v2.jsonl"
 
 
 # --- dataset --------------------------------------------------------------

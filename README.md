@@ -71,7 +71,7 @@ cd dashboard && npm install && npm run dev
 Run the eval suite against a running gateway:
 
 ```bash
-python scripts/eval.py --dataset datasets/golden/v1.jsonl --candidate v2 --baseline v1
+python scripts/eval.py --dataset datasets/golden/v2.jsonl --candidate v2 --baseline v1
 ```
 
 It exits non-zero on a regression, which is the entire interface the CI gate
@@ -102,7 +102,7 @@ python scripts/promote.py assistant v2
 | Hashed per-tenant API keys | done |
 | Error taxonomy with the 429/529 split | done |
 | SSE streaming: block reassembly, tee-and-buffer, split timeouts | done |
-| Golden dataset, programmatic metrics, bootstrap CIs | done |
+| Golden dataset (148 examples, 113 in test), metrics, bootstrap CIs | done |
 | Pairwise LLM-as-judge with position swapping + kappa calibration | done |
 | Versioned prompt registry with promote/rollback | done |
 | CI regression gate (required check) | done |
@@ -490,6 +490,38 @@ tripping a 429 (week 10). A mean would hide which is happening. Until someone ru
 `calibrate()` against a real key, `EstimatorReport.calibrated` is False and
 nothing here claims otherwise.
 
+### How big does an eval set need to be?
+
+The same question as the cache's labelled set, with the same kind of answer:
+bounded by arithmetic, not taste. A paired bootstrap can only resolve an effect
+larger than its interval, so the test split's size sets the smallest change the
+gate can see at all:
+
+| test examples | 9 | 25 | 50 | 100 | 200 | 400 |
+|---|---|---|---|---|---|---|
+| **smallest detectable gain** | none | 16.0% | 8.0% | 4.0% | 2.0% | 1.0% |
+
+The golden set shipped with **9 test examples** for six weeks. At that size the
+gate detects *nothing* — the harness was correct and the dataset made it useless,
+which is a failure mode that looks exactly like a passing build. `v2` has 113 test
+examples, resolving roughly a 4% change, and the header of the file carries this
+table so the next person to add examples knows what they are buying.
+
+### The router's threshold moved on its own, and a test caught it
+
+Sonnet 5 ran an introductory rate until 2026-08-31. On 2026-09-05 it expired, and
+the Sonnet→Opus break-even moved from **0.400 to 0.600** with no code change —
+because the threshold *is* the cost ratio.
+
+That is the argument for deriving it, made by events. A hardcoded `0.4` would now
+be silently wrong: every request with a predicted success between 0.4 and 0.6
+would be routed to the cheap tier at a genuine expected loss.
+
+It also exposed a test that was accidentally date-dependent — it hardcoded a
+probability of 0.42 against the old threshold and began failing on a calendar
+boundary rather than a code change. It now derives the probability from the live
+threshold, and a second test pins the pricing window explicitly.
+
 ### The dashboard refuses to show a number it does not have
 
 Every view is server-rendered against the admin API with a tenant-scoped key, so
@@ -847,7 +879,7 @@ src/prism/
   governance/       per-tenant budgets; cost attribution is a SQL view
 dashboard/          Next.js reader of the admin API; holds no credentials
 migrations/         idempotent SQL, applied on first boot and by scripts/migrate.py
-datasets/golden/    the golden set, versioned next to the code
+datasets/golden/    the golden set, versioned next to the code (v2 is current)
 datasets/cache_pairs.jsonl  labelled query pairs, mostly hard negatives
 prompts/            prompt versions + manifest.json naming the active one
 .github/workflows/  ci.yml (free, always) and eval-gate.yml (costs money)
